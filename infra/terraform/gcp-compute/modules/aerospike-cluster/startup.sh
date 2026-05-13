@@ -16,9 +16,8 @@ REPLICATION_FACTOR=$(curl -fsS "${HDR[@]}" "${META}/replication-factor")
 LOCAL_SSD_COUNT=$(curl -fsS "${HDR[@]}" "${META}/local-ssd-count")
 PARTITIONS_PER_SSD=$(curl -fsS "${HDR[@]}" "${META}/device-partitions-per-ssd")
 COMMIT_TO_DEVICE=$(curl -fsS "${HDR[@]}" "${META}/commit-to-device")
-FEATURES_B64=$(curl -fsS "${HDR[@]}" "${META}/features-conf-base64")
 
-log "node ${NODE_INDEX}/${CLUSTER_SIZE}, Aerospike EE ${VERSION}"
+log "node ${NODE_INDEX}/${CLUSTER_SIZE}, Aerospike Community Edition ${VERSION}"
 
 echo never > /sys/kernel/mm/transparent_hugepage/enabled || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag || true
@@ -38,16 +37,11 @@ done
 apt-get update
 apt-get install -y curl gnupg lsb-release python3 ca-certificates parted
 
-TGZ_URL="https://download.aerospike.com/artifacts/aerospike-server-enterprise/${VERSION}/aerospike-server-enterprise_${VERSION}_tools-${TOOLS_VERSION}_ubuntu22.04_x86_64.tgz"
+TGZ_URL="https://download.aerospike.com/artifacts/aerospike-server-community/${VERSION}/aerospike-server-community_${VERSION}_tools-${TOOLS_VERSION}_ubuntu22.04_x86_64.tgz"
 curl -fsSL -o /tmp/aerospike.tgz "${TGZ_URL}"
 mkdir -p /tmp/aerospike
 tar -xzf /tmp/aerospike.tgz -C /tmp/aerospike --strip-components=1
-apt-get install -y /tmp/aerospike/aerospike-server-enterprise_*.deb /tmp/aerospike/aerospike-tools_*.deb
-
-mkdir -p /etc/aerospike
-echo "${FEATURES_B64}" | base64 -d > /etc/aerospike/features.conf
-chmod 640 /etc/aerospike/features.conf
-chown root:aerospike /etc/aerospike/features.conf || true
+apt-get install -y /tmp/aerospike/aerospike-server-community_*.deb /tmp/aerospike/aerospike-tools_*.deb
 
 DEVICE_LINES=""
 for i in $(seq 0 $((LOCAL_SSD_COUNT - 1))); do
@@ -88,7 +82,6 @@ fi
 cat > /etc/aerospike/aerospike.conf <<CONF
 service {
     cluster-name bench
-    feature-key-file /etc/aerospike/features.conf
     proto-fd-max 15000
 }
 

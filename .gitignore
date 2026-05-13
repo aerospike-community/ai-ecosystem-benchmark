@@ -17,4 +17,3 @@ override.tf.json
 *.auto.tfvars.json
 *.pem
 *.key
-*.features.conf

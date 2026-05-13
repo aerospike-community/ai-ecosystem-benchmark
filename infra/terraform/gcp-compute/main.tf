@@ -61,7 +61,6 @@ module "aerospike" {
   replication_factor = var.aerospike_replication_factor
   zone               = var.zone
   subnet_self_link   = module.network.subnet_self_link
-  features_conf_path = var.enable_aerospike ? var.aerospike_features_conf_path : ""
   server_version     = var.aerospike_server_version
   labels             = local.common_labels
 }

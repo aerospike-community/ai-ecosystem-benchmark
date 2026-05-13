@@ -55,7 +55,7 @@ variable "namespace" {
 }
 
 variable "server_version" {
-  description = "Aerospike Enterprise server version."
+  description = "Aerospike Community Edition server version."
   type        = string
   default     = "8.0.0.15"
 }
@@ -64,11 +64,6 @@ variable "tools_version" {
   description = "Aerospike tools version bundled with server_version."
   type        = string
   default     = "13.0.0"
-}
-
-variable "features_conf_path" {
-  description = "Path to a valid Aerospike Enterprise feature-key file."
-  type        = string
 }
 
 variable "commit_to_device" {

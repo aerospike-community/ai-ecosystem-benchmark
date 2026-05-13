@@ -13,6 +13,3 @@ postgres_topology = "standalone"
 
 # Optional. Leave empty to skip creating a public SSH ingress rule.
 allowed_ssh_cidr = ""
-
-# Required only when enable_aerospike = true.
-# aerospike_features_conf_path = "./features.conf"

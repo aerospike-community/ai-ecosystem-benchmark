@@ -91,7 +91,7 @@ variable "postgres_db_user" {
 }
 
 variable "enable_aerospike" {
-  description = "Whether to provision Aerospike Enterprise."
+  description = "Whether to provision Aerospike Community Edition."
   type        = bool
   default     = false
 }
@@ -118,14 +118,8 @@ variable "aerospike_replication_factor" {
   }
 }
 
-variable "aerospike_features_conf_path" {
-  description = "Path to an Aerospike Enterprise features.conf file. Required when enable_aerospike is true."
-  type        = string
-  default     = null
-}
-
 variable "aerospike_server_version" {
-  description = "Aerospike Enterprise server version."
+  description = "Aerospike Community Edition server version."
   type        = string
   default     = "8.0.0.15"
 }

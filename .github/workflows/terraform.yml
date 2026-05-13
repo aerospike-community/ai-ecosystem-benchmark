@@ -58,7 +58,7 @@ on:
           - standalone
           - replicated
       enable_aerospike:
-        description: Provision Aerospike Enterprise.
+        description: Provision Aerospike Community Edition.
         required: true
         type: boolean
         default: false
@@ -102,7 +102,6 @@ env:
   TF_VAR_enable_aerospike: ${{ inputs.enable_aerospike }}
   TF_VAR_aerospike_node_count: ${{ inputs.aerospike_node_count }}
   TF_VAR_aerospike_replication_factor: ${{ inputs.aerospike_replication_factor }}
-  TF_VAR_aerospike_features_conf_path: ${{ runner.temp }}/aerospike-features.conf
 
 jobs:
   terraform:
@@ -124,18 +123,6 @@ jobs:
         with:
           terraform_version: 1.8.5
           terraform_wrapper: false
-
-      - name: Prepare Aerospike features.conf
-        if: ${{ inputs.enable_aerospike }}
-        shell: bash
-        env:
-          AEROSPIKE_FEATURES_CONF: ${{ secrets.AEROSPIKE_FEATURES_CONF }}
-        run: |
-          if [ -z "${AEROSPIKE_FEATURES_CONF}" ]; then
-            echo "::error::AEROSPIKE_FEATURES_CONF secret is required when enable_aerospike is true."
-            exit 1
-          fi
-          printf '%s' "${AEROSPIKE_FEATURES_CONF}" > "${RUNNER_TEMP}/aerospike-features.conf"
 
       - name: Terraform init
         working-directory: ${{ env.TERRAFORM_DIR }}

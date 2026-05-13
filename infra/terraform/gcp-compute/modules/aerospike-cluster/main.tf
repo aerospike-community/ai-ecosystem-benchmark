@@ -45,7 +45,6 @@ resource "google_compute_instance" "node" {
     local-ssd-count           = var.local_ssd_count
     device-partitions-per-ssd = var.device_partitions_per_ssd
     commit-to-device          = var.commit_to_device
-    features-conf-base64      = base64encode(file(var.features_conf_path))
   }
 
   metadata_startup_script = file("${path.module}/startup.sh")
