@@ -1,0 +1,192 @@
+name: Terraform
+
+on:
+  workflow_dispatch:
+    inputs:
+      terraform_action:
+        description: Terraform action to run.
+        required: true
+        type: choice
+        default: plan
+        options:
+          - plan
+          - apply
+          - destroy
+      project_id:
+        description: GCP project ID.
+        required: true
+        type: string
+      region:
+        description: GCP region.
+        required: true
+        type: string
+        default: us-central1
+      zone:
+        description: GCP zone.
+        required: true
+        type: string
+        default: us-central1-a
+      name_prefix:
+        description: Prefix for created resources.
+        required: true
+        type: string
+        default: ai-bench
+      enable_redis:
+        description: Provision Redis.
+        required: true
+        type: boolean
+        default: true
+      redis_topology:
+        description: Redis topology.
+        required: true
+        type: choice
+        default: standalone
+        options:
+          - standalone
+          - sentinel
+      enable_postgres:
+        description: Provision Postgres.
+        required: true
+        type: boolean
+        default: false
+      postgres_topology:
+        description: Postgres topology.
+        required: true
+        type: choice
+        default: standalone
+        options:
+          - standalone
+          - replicated
+      enable_aerospike:
+        description: Provision Aerospike Enterprise.
+        required: true
+        type: boolean
+        default: false
+      aerospike_node_count:
+        description: Aerospike node count.
+        required: true
+        type: number
+        default: 1
+      aerospike_replication_factor:
+        description: Aerospike replication factor.
+        required: true
+        type: number
+        default: 1
+      allowed_ssh_cidr:
+        description: Optional SSH CIDR, for example 203.0.113.10/32. Leave empty for no SSH ingress.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-${{ inputs.name_prefix }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TERRAFORM_DIR: infra/terraform/gcp-compute
+  TF_VAR_project_id: ${{ inputs.project_id }}
+  TF_VAR_region: ${{ inputs.region }}
+  TF_VAR_zone: ${{ inputs.zone }}
+  TF_VAR_name_prefix: ${{ inputs.name_prefix }}
+  TF_VAR_allowed_ssh_cidr: ${{ inputs.allowed_ssh_cidr }}
+  TF_VAR_enable_redis: ${{ inputs.enable_redis }}
+  TF_VAR_redis_topology: ${{ inputs.redis_topology }}
+  TF_VAR_enable_postgres: ${{ inputs.enable_postgres }}
+  TF_VAR_postgres_topology: ${{ inputs.postgres_topology }}
+  TF_VAR_enable_aerospike: ${{ inputs.enable_aerospike }}
+  TF_VAR_aerospike_node_count: ${{ inputs.aerospike_node_count }}
+  TF_VAR_aerospike_replication_factor: ${{ inputs.aerospike_replication_factor }}
+  TF_VAR_aerospike_features_conf_path: ${{ runner.temp }}/aerospike-features.conf
+
+jobs:
+  terraform:
+    name: Terraform ${{ inputs.terraform_action }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+          terraform_wrapper: false
+
+      - name: Prepare Aerospike features.conf
+        if: ${{ inputs.enable_aerospike }}
+        shell: bash
+        env:
+          AEROSPIKE_FEATURES_CONF: ${{ secrets.AEROSPIKE_FEATURES_CONF }}
+        run: |
+          if [ -z "${AEROSPIKE_FEATURES_CONF}" ]; then
+            echo "::error::AEROSPIKE_FEATURES_CONF secret is required when enable_aerospike is true."
+            exit 1
+          fi
+          printf '%s' "${AEROSPIKE_FEATURES_CONF}" > "${RUNNER_TEMP}/aerospike-features.conf"
+
+      - name: Terraform init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        shell: bash
+        run: |
+          if [ -z "${TF_STATE_BUCKET}" ]; then
+            echo "::error::TF_STATE_BUCKET secret is required for the GCS Terraform backend."
+            exit 1
+          fi
+
+          terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=ai-ecosystem-benchmark/gcp-compute/${{ inputs.name_prefix }}"
+        env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+
+      - name: Terraform format check
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform validate
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform validate
+
+      - name: Terraform plan
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        shell: bash
+        run: |
+          if [ "${{ inputs.terraform_action }}" = "destroy" ]; then
+            terraform plan -destroy -out=tfplan
+          else
+            terraform plan -out=tfplan
+          fi
+
+      - name: Terraform apply
+        if: ${{ inputs.terraform_action == 'apply' || inputs.terraform_action == 'destroy' }}
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Print endpoints
+        if: ${{ inputs.terraform_action == 'apply' }}
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        shell: bash
+        run: |
+          terraform output -json endpoints > endpoints.json
+          {
+            echo "### Terraform endpoints"
+            echo
+            echo "These are private VPC endpoints. Run benchmarks from the same VPC or add a private connectivity path."
+            echo
+            echo '```json'
+            jq . endpoints.json
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

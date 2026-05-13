@@ -1,0 +1,18 @@
+project_id = "my-gcp-project"
+region     = "us-central1"
+zone       = "us-central1-a"
+
+name_prefix = "ai-bench"
+
+enable_redis     = true
+enable_postgres  = true
+enable_aerospike = false
+
+redis_topology    = "standalone"
+postgres_topology = "standalone"
+
+# Optional. Leave empty to skip creating a public SSH ingress rule.
+allowed_ssh_cidr = ""
+
+# Required only when enable_aerospike = true.
+# aerospike_features_conf_path = "./features.conf"
