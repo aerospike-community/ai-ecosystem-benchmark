@@ -12,10 +12,6 @@ on:
           - plan
           - apply
           - destroy
-      project_id:
-        description: GCP project ID.
-        required: true
-        type: string
       region:
         description: GCP region.
         required: true
@@ -30,12 +26,26 @@ on:
         description: Prefix for created resources.
         required: true
         type: string
-        default: ai-bench
+      enable_aerospike:
+        description: Provision Aerospike Community Edition.
+        required: true
+        type: boolean
+        default: true
+      aerospike_node_count:
+        description: Aerospike node count.
+        required: true
+        type: number
+        default: 1
+      aerospike_replication_factor:
+        description: Aerospike replication factor.
+        required: true
+        type: number
+        default: 1
       enable_redis:
         description: Provision Redis.
         required: true
         type: boolean
-        default: true
+        default: false
       redis_topology:
         description: Redis topology.
         required: true
@@ -57,21 +67,6 @@ on:
         options:
           - standalone
           - replicated
-      enable_aerospike:
-        description: Provision Aerospike Community Edition.
-        required: true
-        type: boolean
-        default: false
-      aerospike_node_count:
-        description: Aerospike node count.
-        required: true
-        type: number
-        default: 1
-      aerospike_replication_factor:
-        description: Aerospike replication factor.
-        required: true
-        type: number
-        default: 1
       allowed_ssh_cidr:
         description: Optional SSH CIDR, for example 203.0.113.10/32. Leave empty for no SSH ingress.
         required: false
@@ -90,18 +85,19 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   TERRAFORM_DIR: infra/terraform/gcp-compute
-  TF_VAR_project_id: ${{ inputs.project_id }}
+  GCP_PROJECT_ID: firefly-aerospike
+  TF_VAR_project_id: firefly-aerospike
   TF_VAR_region: ${{ inputs.region }}
   TF_VAR_zone: ${{ inputs.zone }}
   TF_VAR_name_prefix: ${{ inputs.name_prefix }}
   TF_VAR_allowed_ssh_cidr: ${{ inputs.allowed_ssh_cidr }}
+  TF_VAR_enable_aerospike: ${{ inputs.enable_aerospike }}
+  TF_VAR_aerospike_node_count: ${{ inputs.aerospike_node_count }}
+  TF_VAR_aerospike_replication_factor: ${{ inputs.aerospike_replication_factor }}
   TF_VAR_enable_redis: ${{ inputs.enable_redis }}
   TF_VAR_redis_topology: ${{ inputs.redis_topology }}
   TF_VAR_enable_postgres: ${{ inputs.enable_postgres }}
   TF_VAR_postgres_topology: ${{ inputs.postgres_topology }}
-  TF_VAR_enable_aerospike: ${{ inputs.enable_aerospike }}
-  TF_VAR_aerospike_node_count: ${{ inputs.aerospike_node_count }}
-  TF_VAR_aerospike_replication_factor: ${{ inputs.aerospike_replication_factor }}
 
 jobs:
   terraform:

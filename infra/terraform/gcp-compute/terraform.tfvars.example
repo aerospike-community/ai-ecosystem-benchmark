@@ -1,12 +1,12 @@
-project_id = "my-gcp-project"
+project_id = "firefly-aerospike"
 region     = "us-central1"
 zone       = "us-central1-a"
 
 name_prefix = "ai-bench"
 
-enable_redis     = true
-enable_postgres  = true
-enable_aerospike = false
+enable_aerospike = true
+enable_redis     = false
+enable_postgres  = false
 
 redis_topology    = "standalone"
 postgres_topology = "standalone"

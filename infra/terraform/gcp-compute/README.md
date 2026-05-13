@@ -7,6 +7,7 @@ This stack provisions benchmark database backends on GCP Compute Engine:
 - Aerospike Community Edition: one or more nodes with mesh heartbeat.
 
 The GitHub Action at `.github/workflows/terraform.yml` runs this stack manually with `workflow_dispatch`.
+It is currently pinned to the `firefly-aerospike` GCP project; use `name_prefix` in the manual trigger to separate test deployments.
 
 ## Important Assumptions
 
@@ -45,9 +46,9 @@ Copy `terraform.tfvars.example` to a local `.tfvars` file and adjust the enabled
 Each backend can be toggled independently:
 
 ```hcl
-enable_redis     = true
-enable_postgres  = true
-enable_aerospike = false
+enable_aerospike = true
+enable_redis     = false
+enable_postgres  = false
 ```
 
 Use `redis_topology = "sentinel"` for a three-node Redis deployment and `postgres_topology = "replicated"` for a three-node Postgres deployment.

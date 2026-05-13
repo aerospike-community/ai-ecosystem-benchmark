@@ -18,7 +18,6 @@ variable "zone" {
 variable "name_prefix" {
   description = "Resource name prefix."
   type        = string
-  default     = "ai-bench"
 
   validation {
     condition     = can(regex("^[a-z]([-a-z0-9]{0,30}[a-z0-9])?$", var.name_prefix))
@@ -47,7 +46,7 @@ variable "labels" {
 variable "enable_redis" {
   description = "Whether to provision Redis."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "redis_topology" {
@@ -93,7 +92,7 @@ variable "postgres_db_user" {
 variable "enable_aerospike" {
   description = "Whether to provision Aerospike Community Edition."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "aerospike_node_count" {
