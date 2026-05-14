@@ -163,13 +163,93 @@ jobs:
         working-directory: ${{ env.TERRAFORM_DIR }}
         shell: bash
         run: |
+          set -euo pipefail
+
           terraform output -json endpoints > endpoints.json
+          terraform output -json network > network.json
+
+          has_backend() {
+            jq -e ".$1 != null" endpoints.json >/dev/null
+          }
+
+          print_nodes() {
+            local backend="$1"
+            jq -r --arg backend "${backend}" '
+              .[$backend].nodes[]
+              | "- `\(.name)`: internal `\(.internal_ip)`, external `\(.external_ip)`"
+            ' endpoints.json
+          }
+
           {
-            echo "### Terraform endpoints"
+            echo "## Terraform Deployment"
             echo
-            echo "These are private VPC endpoints. Run benchmarks from the same VPC or add a private connectivity path."
+            echo "- **Project:** \`${GCP_PROJECT_ID}\`"
+            echo "- **Prefix:** \`${TF_VAR_name_prefix}\`"
+            echo "- **Region:** \`${TF_VAR_region}\`"
+            echo "- **Zone:** \`${TF_VAR_zone}\`"
+            echo "- **Network:** \`$(jq -r '.name' network.json)\`"
+            echo "- **Subnet:** \`$(jq -r '.subnet_cidr' network.json)\`"
             echo
-            echo '```json'
-            jq . endpoints.json
-            echo '```'
-          } >> "${GITHUB_STEP_SUMMARY}"
+            echo "These service endpoints are private VPC IPs. They work from clients inside the benchmark VPC. For local laptop access, use the SSH tunnel command below."
+            echo
+
+            if has_backend aerospike; then
+              echo "### Aerospike"
+              echo
+              echo "- **Connection string:** \`$(jq -r '.aerospike.connection_string' endpoints.json)\`"
+              echo "- **Host:** \`$(jq -r '.aerospike.host' endpoints.json)\`"
+              echo "- **Port:** \`$(jq -r '.aerospike.port' endpoints.json)\`"
+              echo "- **Nodes:**"
+              print_nodes aerospike
+              echo
+            fi
+
+            if has_backend postgres; then
+              echo "### Postgres"
+              echo
+              echo "- **Connection string:** \`$(jq -r '.postgres.connection_string' endpoints.json)\`"
+              echo "- **Async connection string:** \`$(jq -r '.postgres.async_connection_string' endpoints.json)\`"
+              echo "- **Host:** \`$(jq -r '.postgres.host' endpoints.json)\`"
+              echo "- **Port:** \`$(jq -r '.postgres.port' endpoints.json)\`"
+              echo "- **Database:** \`$(jq -r '.postgres.database' endpoints.json)\`"
+              echo "- **Username:** \`$(jq -r '.postgres.username' endpoints.json)\`"
+              echo "- **Password:** sensitive; retrieve from Terraform state with \`terraform output -raw postgres_password\`."
+              echo "- **Nodes:**"
+              print_nodes postgres
+              echo
+            fi
+
+            if has_backend redis; then
+              echo "### Redis"
+              echo
+              echo "- **URL:** \`$(jq -r '.redis.url' endpoints.json)\`"
+              echo "- **Host:** \`$(jq -r '.redis.host' endpoints.json)\`"
+              echo "- **Port:** \`$(jq -r '.redis.port' endpoints.json)\`"
+              echo "- **Topology:** \`$(jq -r '.redis.topology' endpoints.json)\`"
+              echo "- **Nodes:**"
+              print_nodes redis
+              echo
+            fi
+
+            bastion="$(jq -r '[.[] | select(. != null) | .nodes[0].name][0]' endpoints.json)"
+            tunnel_flags="$(jq -r '
+              [
+                (if .aerospike != null then "-L 3000:\(.aerospike.host):\(.aerospike.port)" else empty end),
+                (if .postgres != null then "-L 5432:\(.postgres.host):\(.postgres.port)" else empty end),
+                (if .redis != null then "-L 6379:\(.redis.host):\(.redis.port)" else empty end)
+              ] | join(" ")
+            ' endpoints.json)"
+
+            if [ -n "${bastion}" ] && [ -n "${tunnel_flags}" ]; then
+              echo "### Local Access Via SSH Tunnel"
+              echo
+              echo "If you set \`allowed_ssh_cidr\` to your public IP/CIDR, run this locally:"
+              echo
+              echo '```bash'
+              echo "gcloud compute ssh ${bastion} --project ${GCP_PROJECT_ID} --zone ${TF_VAR_zone} -- ${tunnel_flags} -N"
+              echo '```'
+              echo
+              echo "Then connect locally with enabled services on \`localhost\`: Aerospike \`localhost:3000\`, Postgres \`localhost:5432\`, Redis \`localhost:6379\`."
+              echo
+            fi
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
