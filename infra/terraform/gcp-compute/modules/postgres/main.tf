@@ -12,6 +12,14 @@ locals {
   ]
 }
 
+resource "terraform_data" "init_inputs" {
+  input = {
+    db_name     = var.db_name
+    db_user     = var.db_user
+    db_password = var.db_password
+  }
+}
+
 resource "google_compute_instance" "node" {
   count        = local.node_count
   name         = local.node_names[count.index]
@@ -56,4 +64,8 @@ resource "google_compute_instance" "node" {
   }
 
   metadata_startup_script = file("${path.module}/startup.sh")
+
+  lifecycle {
+    replace_triggered_by = [terraform_data.init_inputs]
+  }
 }

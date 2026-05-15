@@ -31,10 +31,10 @@ variable "subnet_cidr" {
   default     = "10.100.0.0/24"
 }
 
-variable "allowed_ssh_cidr" {
-  description = "Optional CIDR allowed to SSH to nodes. Leave empty to create no SSH ingress rule."
-  type        = string
-  default     = ""
+variable "enable_local_access" {
+  description = "Whether to allow the local gcloud tunnel command through Google Cloud IAP."
+  type        = bool
+  default     = true
 }
 
 variable "labels" {
@@ -87,6 +87,18 @@ variable "postgres_db_user" {
   description = "Benchmark database user."
   type        = string
   default     = "bench"
+}
+
+variable "postgres_password" {
+  description = "Benchmark Postgres password."
+  type        = string
+  default     = "benchpassword"
+  sensitive   = true
+
+  validation {
+    condition     = length(var.postgres_password) >= 12
+    error_message = "postgres_password must be at least 12 characters."
+  }
 }
 
 variable "enable_aerospike" {

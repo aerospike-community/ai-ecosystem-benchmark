@@ -9,9 +9,9 @@ resource "google_compute_subnetwork" "this" {
   network       = google_compute_network.this.id
 }
 
-resource "google_compute_firewall" "ssh" {
-  count   = var.allowed_ssh_cidr == "" ? 0 : 1
-  name    = "${var.name_prefix}-allow-ssh"
+resource "google_compute_firewall" "iap_ssh" {
+  count   = var.enable_local_access ? 1 : 0
+  name    = "${var.name_prefix}-allow-iap-ssh"
   network = google_compute_network.this.name
 
   allow {
@@ -19,7 +19,7 @@ resource "google_compute_firewall" "ssh" {
     ports    = ["22"]
   }
 
-  source_ranges = [var.allowed_ssh_cidr]
+  source_ranges = ["35.235.240.0/20"]
   target_tags   = ["bench-node"]
 }
 

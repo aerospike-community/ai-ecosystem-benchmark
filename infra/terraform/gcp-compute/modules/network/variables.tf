@@ -3,10 +3,10 @@ variable "name_prefix" {
   type        = string
 }
 
-variable "allowed_ssh_cidr" {
-  description = "CIDR allowed to SSH in. Empty means no SSH ingress rule."
-  type        = string
-  default     = ""
+variable "enable_local_access" {
+  description = "Whether to allow SSH through Google Cloud IAP for local tunnel access."
+  type        = bool
+  default     = true
 }
 
 variable "subnet_cidr" {

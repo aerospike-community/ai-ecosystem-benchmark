@@ -39,9 +39,3 @@ output "network" {
     subnet_cidr = module.network.subnet_cidr
   }
 }
-
-output "postgres_password" {
-  description = "Generated Postgres benchmark user password. Retrieve only when needed with: terraform output -raw postgres_password"
-  value       = var.enable_postgres ? random_password.postgres[0].result : null
-  sensitive   = true
-}

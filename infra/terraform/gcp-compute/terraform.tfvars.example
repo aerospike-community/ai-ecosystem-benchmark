@@ -11,5 +11,8 @@ enable_postgres  = false
 redis_topology    = "standalone"
 postgres_topology = "standalone"
 
-# Optional. Leave empty to skip creating a public SSH ingress rule.
-allowed_ssh_cidr = ""
+# Password for the Postgres bench user when Postgres is enabled.
+postgres_password = "benchpassword"
+
+# Enables the copy-paste "connect from your computer" command in the workflow summary.
+enable_local_access = true

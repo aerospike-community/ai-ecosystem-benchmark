@@ -67,11 +67,16 @@ on:
         options:
           - standalone
           - replicated
-      allowed_ssh_cidr:
-        description: Optional SSH CIDR, for example 203.0.113.10/32. Leave empty for no SSH ingress.
-        required: false
+      postgres_password:
+        description: Postgres password for the bench user. Only used when enable_postgres is true.
+        required: true
         type: string
-        default: ""
+        default: benchpassword
+      enable_local_access:
+        description: Create the access needed for the copy-paste "Connect from your computer" command in the result summary.
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -90,7 +95,7 @@ env:
   TF_VAR_region: ${{ inputs.region }}
   TF_VAR_zone: ${{ inputs.zone }}
   TF_VAR_name_prefix: ${{ inputs.name_prefix }}
-  TF_VAR_allowed_ssh_cidr: ${{ inputs.allowed_ssh_cidr }}
+  TF_VAR_enable_local_access: ${{ inputs.enable_local_access }}
   TF_VAR_enable_aerospike: ${{ inputs.enable_aerospike }}
   TF_VAR_aerospike_node_count: ${{ inputs.aerospike_node_count }}
   TF_VAR_aerospike_replication_factor: ${{ inputs.aerospike_replication_factor }}
@@ -98,6 +103,7 @@ env:
   TF_VAR_redis_topology: ${{ inputs.redis_topology }}
   TF_VAR_enable_postgres: ${{ inputs.enable_postgres }}
   TF_VAR_postgres_topology: ${{ inputs.postgres_topology }}
+  TF_VAR_postgres_password: ${{ inputs.postgres_password }}
 
 jobs:
   terraform:
@@ -176,7 +182,7 @@ jobs:
             local backend="$1"
             jq -r --arg backend "${backend}" '
               .[$backend].nodes[]
-              | "- `\(.name)`: internal `\(.internal_ip)`, external `\(.external_ip)`"
+              | "- `\(.name)`: private/internal IP `\(.internal_ip)`, public/external IP `\(.external_ip)`"
             ' endpoints.json
           }
 
@@ -190,14 +196,21 @@ jobs:
             echo "- **Network:** \`$(jq -r '.name' network.json)\`"
             echo "- **Subnet:** \`$(jq -r '.subnet_cidr' network.json)\`"
             echo
-            echo "These service endpoints are private VPC IPs. They work from clients inside the benchmark VPC. For local laptop access, use the SSH tunnel command below."
+            echo "### Which Address Should I Use?"
+            echo
+            echo "- **Running benchmarks in GCP:** use the private/internal host values below."
+            echo "- **Connecting from your computer:** first run the command below, then use \`localhost\`."
+            echo "- **Public/external IPs:** these are VM addresses for debugging. The database ports are not open to the internet."
+            echo
+            echo "A private/internal IP only works from another machine in the same benchmark VPC. It is not an address your computer can use directly."
             echo
 
             if has_backend aerospike; then
               echo "### Aerospike"
               echo
-              echo "- **Connection string:** \`$(jq -r '.aerospike.connection_string' endpoints.json)\`"
-              echo "- **Host:** \`$(jq -r '.aerospike.host' endpoints.json)\`"
+              echo "- **Use from GCP/VPC:** \`$(jq -r '.aerospike.connection_string' endpoints.json)\`"
+              echo "- **Use from your computer after running the command below:** \`localhost:3000\`"
+              echo "- **Private host:** \`$(jq -r '.aerospike.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.aerospike.port' endpoints.json)\`"
               echo "- **Nodes:**"
               print_nodes aerospike
@@ -207,13 +220,14 @@ jobs:
             if has_backend postgres; then
               echo "### Postgres"
               echo
-              echo "- **Connection string:** \`$(jq -r '.postgres.connection_string' endpoints.json)\`"
-              echo "- **Async connection string:** \`$(jq -r '.postgres.async_connection_string' endpoints.json)\`"
-              echo "- **Host:** \`$(jq -r '.postgres.host' endpoints.json)\`"
+              echo "- **Use from GCP/VPC:** \`$(jq -r '.postgres.connection_string' endpoints.json)\`"
+              echo "- **Use from your computer after running the command below:** \`postgresql://$(jq -r '.postgres.username' endpoints.json):<password>@localhost:5432/$(jq -r '.postgres.database' endpoints.json)\`"
+              echo "- **Async from your computer after running the command below:** \`postgresql+asyncpg://$(jq -r '.postgres.username' endpoints.json):<password>@localhost:5432/$(jq -r '.postgres.database' endpoints.json)\`"
+              echo "- **Private host:** \`$(jq -r '.postgres.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.postgres.port' endpoints.json)\`"
               echo "- **Database:** \`$(jq -r '.postgres.database' endpoints.json)\`"
               echo "- **Username:** \`$(jq -r '.postgres.username' endpoints.json)\`"
-              echo "- **Password:** sensitive; retrieve from Terraform state with \`terraform output -raw postgres_password\`."
+              echo "- **Password:** use the \`postgres_password\` workflow input. The default is \`benchpassword\`."
               echo "- **Nodes:**"
               print_nodes postgres
               echo
@@ -222,8 +236,9 @@ jobs:
             if has_backend redis; then
               echo "### Redis"
               echo
-              echo "- **URL:** \`$(jq -r '.redis.url' endpoints.json)\`"
-              echo "- **Host:** \`$(jq -r '.redis.host' endpoints.json)\`"
+              echo "- **Use from GCP/VPC:** \`$(jq -r '.redis.url' endpoints.json)\`"
+              echo "- **Use from your computer after running the command below:** \`redis://localhost:6379/0\`"
+              echo "- **Private host:** \`$(jq -r '.redis.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.redis.port' endpoints.json)\`"
               echo "- **Topology:** \`$(jq -r '.redis.topology' endpoints.json)\`"
               echo "- **Nodes:**"
@@ -241,15 +256,19 @@ jobs:
             ' endpoints.json)"
 
             if [ -n "${bastion}" ] && [ -n "${tunnel_flags}" ]; then
-              echo "### Local Access Via SSH Tunnel"
+              echo "### Connect From Your Computer"
               echo
-              echo "If you set \`allowed_ssh_cidr\` to your public IP/CIDR, run this locally:"
-              echo
-              echo '```bash'
-              echo "gcloud compute ssh ${bastion} --project ${GCP_PROJECT_ID} --zone ${TF_VAR_zone} -- ${tunnel_flags} -N"
-              echo '```'
-              echo
-              echo "Then connect locally with enabled services on \`localhost\`: Aerospike \`localhost:3000\`, Postgres \`localhost:5432\`, Redis \`localhost:6379\`."
+              if [ "${TF_VAR_enable_local_access}" = "true" ]; then
+                echo "Run this command on your computer and leave it running. It opens a local connection path through Google Cloud without exposing database ports to the internet:"
+                echo
+                echo '```bash'
+                echo "gcloud compute ssh ${bastion} --project ${GCP_PROJECT_ID} --zone ${TF_VAR_zone} --tunnel-through-iap -- ${tunnel_flags} -N"
+                echo '```'
+                echo
+                echo "Then connect to enabled services on \`localhost\`: Aerospike \`localhost:3000\`, Postgres \`localhost:5432\`, Redis \`localhost:6379\`."
+              else
+                echo "\`enable_local_access\` was disabled for this deployment. That is fine if your benchmark client runs in GCP. To connect from your computer, rerun \`apply\` with \`enable_local_access\` set to \`true\`."
+              fi
               echo
             fi
           } | tee -a "${GITHUB_STEP_SUMMARY}"
