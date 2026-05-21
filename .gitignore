@@ -17,3 +17,21 @@ override.tf.json
 *.auto.tfvars.json
 *.pem
 *.key
+
+# Python environments and build outputs.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# JetBrains IDE project files.
+.idea/
+*.iml
+
+# VS Code/Cursor workspace settings.
+.vscode/

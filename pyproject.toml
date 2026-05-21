@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-ecosystem-benchmark"
+version = "0.1.0"
+description = "Framework for benchmarking AI ecosystem tools against database backends"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Aerospike, Inc.", email = "info@aerospike.com"}
+]
+keywords = ["ai", "benchmark", "database", "aerospike", "postgres", "redis"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "deptry>=0.25",
+  "mypy>=1.20",
+  "pre-commit>=4.6",
+  "pytest>=8",
+  "ruff>=0.15",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ai_ecosystem_benchmark*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.deptry]
+known_first_party = ["ai_ecosystem_benchmark"]
+
+# Ruff: linter and formatter.
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [".venv", "dist", "build"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "SIM", # flake8-simplify
+  "C4",  # flake8-comprehensions
+  "N",   # pep8-naming
+]
+ignore = [
+  "E501", # line length, handled by the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["B011"]
+
+# Mypy: static type checker.
+[tool.mypy]
+python_version = "3.10"
+files = [
+  "src/ai_ecosystem_benchmark",
+  "tests",
+]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true

@@ -68,7 +68,7 @@ on:
           - standalone
           - replicated
       postgres_password:
-        description: Postgres password for the bench user. Only used when enable_postgres is true.
+        description: Postgres password for the bench user. Must be a minimum of 12 characters.
         required: true
         type: string
         default: benchpassword
@@ -247,22 +247,23 @@ jobs:
             fi
 
             bastion="$(jq -r '[.[] | select(. != null) | .nodes[0].name][0]' endpoints.json)"
-            tunnel_flags="$(jq -r '
+            ssh_flags="$(jq -r '
               [
-                (if .aerospike != null then "-L 3000:\(.aerospike.host):\(.aerospike.port)" else empty end),
-                (if .postgres != null then "-L 5432:\(.postgres.host):\(.postgres.port)" else empty end),
-                (if .redis != null then "-L 6379:\(.redis.host):\(.redis.port)" else empty end)
+                (if .aerospike != null then "--ssh-flag=\"-L\" --ssh-flag=\"3000:\(.aerospike.host):\(.aerospike.port)\"" else empty end),
+                (if .postgres != null then "--ssh-flag=\"-L\" --ssh-flag=\"5432:\(.postgres.host):\(.postgres.port)\"" else empty end),
+                (if .redis != null then "--ssh-flag=\"-L\" --ssh-flag=\"6379:\(.redis.host):\(.redis.port)\"" else empty end),
+                "--ssh-flag=\"-N\""
               ] | join(" ")
             ' endpoints.json)"
 
-            if [ -n "${bastion}" ] && [ -n "${tunnel_flags}" ]; then
+            if [ -n "${bastion}" ] && [ -n "${ssh_flags}" ]; then
               echo "### Connect From Your Computer"
               echo
               if [ "${TF_VAR_enable_local_access}" = "true" ]; then
                 echo "Run this command on your computer and leave it running. It opens a local connection path through Google Cloud without exposing database ports to the internet:"
                 echo
                 echo '```bash'
-                echo "gcloud compute ssh ${bastion} --project ${GCP_PROJECT_ID} --zone ${TF_VAR_zone} --tunnel-through-iap -- ${tunnel_flags} -N"
+                echo "gcloud compute ssh ${bastion} --project ${GCP_PROJECT_ID} --zone ${TF_VAR_zone} --tunnel-through-iap ${ssh_flags}"
                 echo '```'
                 echo
                 echo "Then connect to enabled services on \`localhost\`: Aerospike \`localhost:3000\`, Postgres \`localhost:5432\`, Redis \`localhost:6379\`."
