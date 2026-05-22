@@ -73,7 +73,6 @@ class BaseBenchmarkWorkload(ABC):
         """Clean up the workload after benchmark execution."""
         ...
 
-    @final
     def _get_tests_with_prefix(self, prefix: str) -> list[BenchmarkTest]:
         return [
             cast(BenchmarkTest, method)
