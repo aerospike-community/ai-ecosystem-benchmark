@@ -109,6 +109,8 @@ CONF
 if [ "${NODE_ROLE}" = "replica" ]; then
   echo "replicaof ${PRIMARY_IP} 6379" >> /etc/redis-stack.conf
 fi
+chown root:redis /etc/redis-stack.conf
+chmod 0640 /etc/redis-stack.conf
 
 cat > /etc/systemd/system/redis-stack-server.service <<'CONF'
 [Unit]
