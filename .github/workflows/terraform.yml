@@ -205,7 +205,7 @@ jobs:
             echo "### Which Address Should I Use?"
             echo
             echo "- **Running benchmarks in GCP:** use the private/internal host values below."
-            echo "- **Connecting from your computer:** first run the command below, then use \`localhost\`."
+            echo "- **Connecting from your computer:** first run the command below, then use \`127.0.0.1\`."
             echo "- **Public/external IPs:** these are VM addresses for debugging. The database ports are not open to the internet."
             echo
             echo "A private/internal IP only works from another machine in the same benchmark VPC. It is not an address your computer can use directly."
@@ -215,7 +215,7 @@ jobs:
               echo "### Aerospike"
               echo
               echo "- **Use from GCP/VPC:** \`$(jq -r '.aerospike.connection_string' endpoints.json)\`"
-              echo "- **Use from your computer after running the command below:** \`localhost:3000\`"
+              echo "- **Use from your computer after running the command below:** \`127.0.0.1:3000\`"
               echo "- **Private host:** \`$(jq -r '.aerospike.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.aerospike.port' endpoints.json)\`"
               echo "- **Namespace:** \`$(jq -r '.aerospike.namespace' endpoints.json)\`"
@@ -228,8 +228,8 @@ jobs:
               echo "### Postgres"
               echo
               echo "- **Use from GCP/VPC:** \`$(jq -r '.postgres.connection_string' endpoints.json)\`"
-              echo "- **Use from your computer after running the command below:** \`postgresql://$(jq -r '.postgres.username' endpoints.json):<password>@localhost:5432/$(jq -r '.postgres.database' endpoints.json)\`"
-              echo "- **Async from your computer after running the command below:** \`postgresql+asyncpg://$(jq -r '.postgres.username' endpoints.json):<password>@localhost:5432/$(jq -r '.postgres.database' endpoints.json)\`"
+              echo "- **Use from your computer after running the command below:** \`postgresql://$(jq -r '.postgres.username' endpoints.json):<password>@127.0.0.1:5432/$(jq -r '.postgres.database' endpoints.json)\`"
+              echo "- **Async from your computer after running the command below:** \`postgresql+asyncpg://$(jq -r '.postgres.username' endpoints.json):<password>@127.0.0.1:5432/$(jq -r '.postgres.database' endpoints.json)\`"
               echo "- **Private host:** \`$(jq -r '.postgres.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.postgres.port' endpoints.json)\`"
               echo "- **Database:** \`$(jq -r '.postgres.database' endpoints.json)\`"
@@ -244,7 +244,7 @@ jobs:
               echo "### Redis"
               echo
               echo "- **Use from GCP/VPC:** \`$(jq -r '.redis.url' endpoints.json)\`"
-              echo "- **Use from your computer after running the command below:** \`redis://localhost:6379/0\`"
+              echo "- **Use from your computer after running the command below:** \`redis://127.0.0.1:6379/0\`"
               echo "- **Private host:** \`$(jq -r '.redis.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.redis.port' endpoints.json)\`"
               echo "- **Topology:** \`$(jq -r '.redis.topology' endpoints.json)\`"
@@ -273,7 +273,7 @@ jobs:
                 echo "gcloud compute ssh ${bastion} --project ${GCP_PROJECT_ID} --zone ${TF_VAR_zone} --tunnel-through-iap ${ssh_flags}"
                 echo '```'
                 echo
-                echo "Then connect to enabled services on \`localhost\`: Aerospike \`localhost:3000\`, Postgres \`localhost:5432\`, Redis \`localhost:6379\`."
+                echo "Then connect to enabled services on \`127.0.0.1\`: Aerospike \`127.0.0.1:3000\`, Postgres \`127.0.0.1:5432\`, Redis \`127.0.0.1:6379\`."
               else
                 echo "\`enable_local_access\` was disabled for this deployment. That is fine if your benchmark client runs in GCP. To connect from your computer, rerun \`apply\` with \`enable_local_access\` set to \`true\`."
               fi

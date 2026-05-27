@@ -14,9 +14,16 @@ locals {
 
 resource "terraform_data" "init_inputs" {
   input = {
-    db_name     = var.db_name
-    db_user     = var.db_user
-    db_password = var.db_password
+    db_name                = var.db_name
+    db_password            = var.db_password
+    db_user                = var.db_user
+    local_ssd_count        = var.local_ssd_count
+    postgres_major_version = var.postgres_major_version
+    replication_password   = var.replication_password
+    replication_user       = var.replication_user
+    startup_script_sha     = filesha256("${path.module}/startup.sh")
+    synchronous_commit     = var.synchronous_commit
+    topology               = var.topology
   }
 }
 

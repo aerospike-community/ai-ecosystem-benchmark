@@ -13,7 +13,7 @@ It is currently pinned to the `firefly-aerospike` GCP project; use `name_prefix`
 
 - This is a GCP starter because the benchmark examples in this repo are already GCP Compute based.
 - Endpoints printed by Terraform are private/internal IPs. Use them from benchmark clients running in the same GCP VPC.
-- Do not use the private/internal IPs directly from your computer. For local access, run the `gcloud` command printed by the workflow and then connect to `localhost`.
+- Do not use the private/internal IPs directly from your computer. For local access, run the `gcloud` command printed by the workflow and then connect to `127.0.0.1`.
 - Database ports are not opened to the public internet. Local access uses Google Cloud IAP, so users do not need to find their public IP address or enter a CIDR.
 - Aerospike uses Community Edition packages, so no feature key is required for the current starter stack.
 - Redis uses Redis Stack rather than vanilla Redis OSS so benchmark workloads that depend on RediSearch commands such as `FT._LIST` work out of the box.
@@ -33,7 +33,7 @@ Local access is still private: the databases listen on private/internal IPs, and
 ## Which Endpoint To Use
 
 - From a benchmark client running in the benchmark VPC, use the private/internal host printed by the workflow.
-- From your computer, run the `gcloud` command from the workflow summary and then connect to `localhost` on the printed port.
+- From your computer, run the `gcloud` command from the workflow summary and then connect to `127.0.0.1` on the printed port.
 - Public/external IPs are VM addresses for SSH/debugging. They are not database connection strings because database ports are not open to the internet.
 
 Postgres always requires a password. Use the `postgres_password` workflow input when connecting. The default is `benchpassword`, so there is no separate Terraform command to fetch it. Changing `postgres_password`, `postgres_db_name`, or `postgres_db_user` after Postgres has already been created will recreate the Postgres nodes so the new login settings take effect.
