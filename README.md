@@ -86,3 +86,7 @@ class MyWorkload(BaseBenchmarkWorkload):
 The first infrastructure target is a GCP Compute Terraform stack that can provision any combination of Redis, Postgres, and Aerospike benchmark clusters. The GitHub Actions workflow in `.github/workflows/terraform.yml` runs Terraform manually through `workflow_dispatch` and prints non-sensitive endpoint details after apply.
 
 See `infra/terraform/gcp-compute/README.md` for setup details.
+
+## License
+
+This project is licensed under the Apache License 2.0. See `LICENSE` for details.
