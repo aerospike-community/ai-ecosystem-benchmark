@@ -121,9 +121,7 @@ def _make_runner(workload: BaseBenchmarkWorkload) -> BenchmarkRunner:
         ({"runtime_per_function": -5}, "runtime_per_function"),
     ],
 )
-def test_runner_rejects_non_positive_params(
-    override: dict[str, Any], error_substring: str
-) -> None:
+def test_runner_rejects_non_positive_params(override: dict[str, Any], error_substring: str) -> None:
     base: dict[str, Any] = {
         "queries_per_second": 10,
         "scheduler_thread_count": 1,

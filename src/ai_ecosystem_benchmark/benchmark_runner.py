@@ -145,9 +145,7 @@ class BenchmarkRunner:
         # above the per-thread interval means the worker queue has accumulated at least
         # one call per scheduler thread, which is the Little's-Law tipping point for the
         # queue growing rather than draining.
-        congestion_threshold_ns = max(
-            _CONGESTION_DISPATCH_LAG_FLOOR_NS, per_thread_interval_ns
-        )
+        congestion_threshold_ns = max(_CONGESTION_DISPATCH_LAG_FLOOR_NS, per_thread_interval_ns)
         # Plain bool + lock with double-checked locking lets us emit a single warning
         # per test even when many workers cross the threshold simultaneously.
         congestion_warned = False
@@ -180,8 +178,7 @@ class BenchmarkRunner:
                         first_failure_warned = True
                 if should_warn:
                     warnings.warn(
-                        f"{backend}.{test.__name__}: first failure: "
-                        f"{type(exc).__name__}: {exc}",
+                        f"{backend}.{test.__name__}: first failure: {type(exc).__name__}: {exc}",
                         stacklevel=2,
                     )
             else:
@@ -200,9 +197,7 @@ class BenchmarkRunner:
                 # Stagger threads by one global slot so their combined firing pattern
                 # matches the requested ``queries_per_second`` rate exactly.
                 thread_origin_ns = origin_ns + thread_index * global_interval_ns
-                calls_for_thread = base_calls_per_thread + (
-                    1 if thread_index < extra_calls else 0
-                )
+                calls_for_thread = base_calls_per_thread + (1 if thread_index < extra_calls else 0)
                 for slot_index in range(calls_for_thread):
                     target_ns = thread_origin_ns + slot_index * per_thread_interval_ns
                     _sleep_until_ns(target_ns)
