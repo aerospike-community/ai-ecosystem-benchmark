@@ -49,8 +49,28 @@ echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://pack
   > /etc/apt/sources.list.d/redis.list
 
 apt-get update
-apt-get install -y redis
-chown -R redis:redis /var/lib/redis
+apt-get install -y redis-stack-server
+if [ "${TOPOLOGY}" = "sentinel" ]; then
+  apt-get install -y redis-sentinel
+fi
+
+systemctl stop redis-server || true
+systemctl disable redis-server || true
+
+id redis >/dev/null 2>&1 || useradd --system --home /var/lib/redis --shell /usr/sbin/nologin redis
+mkdir -p /etc/redis /var/lib/redis /var/log/redis
+chown -R redis:redis /var/lib/redis /var/log/redis
+
+REDISEARCH_MODULE="/opt/redis-stack/lib/redisearch.so"
+if [ ! -f "${REDISEARCH_MODULE}" ]; then
+  log "RediSearch module not found at ${REDISEARCH_MODULE}"
+  exit 1
+fi
+
+REDIS_CLI="/opt/redis-stack/bin/redis-cli"
+if [ ! -x "${REDIS_CLI}" ]; then
+  REDIS_CLI="redis-cli"
+fi
 
 PRIMARY_IP=""
 if [ "${TOPOLOGY}" = "sentinel" ]; then
@@ -58,7 +78,7 @@ if [ "${TOPOLOGY}" = "sentinel" ]; then
   log "Primary resolved to ${PRIMARY_IP}"
 fi
 
-cat > /etc/redis/redis.conf <<CONF
+cat > /etc/redis-stack.conf <<CONF
 bind 0.0.0.0 -::*
 protected-mode no
 port 6379
@@ -79,16 +99,49 @@ maxmemory-policy noeviction
 dir /var/lib/redis
 loglevel notice
 logfile /var/log/redis/redis-server.log
+loadmodule ${REDISEARCH_MODULE}
 daemonize no
-supervised systemd
+supervised no
 CONF
 
 if [ "${NODE_ROLE}" = "replica" ]; then
-  echo "replicaof ${PRIMARY_IP} 6379" >> /etc/redis/redis.conf
+  echo "replicaof ${PRIMARY_IP} 6379" >> /etc/redis-stack.conf
 fi
 
-systemctl enable redis-server
-systemctl restart redis-server
+cat > /etc/systemd/system/redis-stack-server.service <<'CONF'
+[Unit]
+Description=Redis Stack Server
+After=network.target
+
+[Service]
+Type=simple
+User=redis
+Group=redis
+RuntimeDirectory=redis
+RuntimeDirectoryMode=0755
+ExecStart=/opt/redis-stack/bin/redis-server /etc/redis-stack.conf --daemonize no
+ExecStop=/bin/kill -s TERM $MAINPID
+Restart=always
+RestartSec=5
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+CONF
+
+systemctl daemon-reload
+systemctl enable redis-stack-server
+systemctl restart redis-stack-server
+
+for _ in $(seq 1 30); do
+  if "${REDIS_CLI}" -h 127.0.0.1 -p 6379 FT._LIST >/dev/null 2>&1; then
+    log "RediSearch module ready."
+    break
+  fi
+  sleep 1
+done
+
+"${REDIS_CLI}" -h 127.0.0.1 -p 6379 FT._LIST >/dev/null
 
 if [ "${TOPOLOGY}" = "sentinel" ]; then
   log "Configuring redis-sentinel with master ${MASTER_NAME}@${PRIMARY_IP}, quorum ${QUORUM}"

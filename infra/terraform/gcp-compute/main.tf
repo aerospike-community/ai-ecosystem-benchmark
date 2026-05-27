@@ -53,6 +53,7 @@ module "aerospike" {
   name_prefix        = var.name_prefix
   node_count         = var.aerospike_node_count
   replication_factor = var.aerospike_replication_factor
+  namespace          = var.aerospike_namespace
   zone               = var.zone
   subnet_self_link   = module.network.subnet_self_link
   server_version     = var.aerospike_server_version

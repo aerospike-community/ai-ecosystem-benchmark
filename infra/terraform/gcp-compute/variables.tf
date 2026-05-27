@@ -129,6 +129,12 @@ variable "aerospike_replication_factor" {
   }
 }
 
+variable "aerospike_namespace" {
+  description = "Aerospike namespace name."
+  type        = string
+  default     = "test"
+}
+
 variable "aerospike_server_version" {
   description = "Aerospike Community Edition server version."
   type        = string

@@ -41,6 +41,11 @@ on:
         required: true
         type: number
         default: 1
+      aerospike_namespace:
+        description: Aerospike namespace name.
+        required: true
+        type: string
+        default: test
       enable_redis:
         description: Provision Redis.
         required: true
@@ -99,6 +104,7 @@ env:
   TF_VAR_enable_aerospike: ${{ inputs.enable_aerospike }}
   TF_VAR_aerospike_node_count: ${{ inputs.aerospike_node_count }}
   TF_VAR_aerospike_replication_factor: ${{ inputs.aerospike_replication_factor }}
+  TF_VAR_aerospike_namespace: ${{ inputs.aerospike_namespace }}
   TF_VAR_enable_redis: ${{ inputs.enable_redis }}
   TF_VAR_redis_topology: ${{ inputs.redis_topology }}
   TF_VAR_enable_postgres: ${{ inputs.enable_postgres }}
@@ -212,6 +218,7 @@ jobs:
               echo "- **Use from your computer after running the command below:** \`localhost:3000\`"
               echo "- **Private host:** \`$(jq -r '.aerospike.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.aerospike.port' endpoints.json)\`"
+              echo "- **Namespace:** \`$(jq -r '.aerospike.namespace' endpoints.json)\`"
               echo "- **Nodes:**"
               print_nodes aerospike
               echo

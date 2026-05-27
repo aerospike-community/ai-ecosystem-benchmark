@@ -43,7 +43,7 @@ variable "device_partitions_per_ssd" {
 }
 
 variable "replication_factor" {
-  description = "Replication factor for the bench namespace."
+  description = "Replication factor for the Aerospike namespace."
   type        = number
   default     = 1
 }
@@ -51,7 +51,7 @@ variable "replication_factor" {
 variable "namespace" {
   description = "Aerospike namespace name."
   type        = string
-  default     = "bench"
+  default     = "test"
 }
 
 variable "server_version" {

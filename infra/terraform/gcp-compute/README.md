@@ -2,7 +2,7 @@
 
 This stack provisions benchmark database backends on GCP Compute Engine:
 
-- Redis: standalone or three-node Sentinel topology.
+- Redis Stack: standalone or three-node Sentinel topology, with RediSearch enabled.
 - Postgres: standalone or three-node primary plus async replicas.
 - Aerospike Community Edition: one or more nodes with mesh heartbeat.
 
@@ -16,6 +16,7 @@ It is currently pinned to the `firefly-aerospike` GCP project; use `name_prefix`
 - Do not use the private/internal IPs directly from your computer. For local access, run the `gcloud` command printed by the workflow and then connect to `localhost`.
 - Database ports are not opened to the public internet. Local access uses Google Cloud IAP, so users do not need to find their public IP address or enter a CIDR.
 - Aerospike uses Community Edition packages, so no feature key is required for the current starter stack.
+- Redis uses Redis Stack rather than vanilla Redis OSS so benchmark workloads that depend on RediSearch commands such as `FT._LIST` work out of the box.
 - Terraform state uses a GCS backend. Create the state bucket before using the GitHub Action.
 
 ## Manual Workflow Inputs
@@ -23,6 +24,7 @@ It is currently pinned to the `firefly-aerospike` GCP project; use `name_prefix`
 - `terraform_action`: choose `plan` to preview, `apply` to create/update resources, or `destroy` to delete them.
 - `name_prefix`: short label added to all resources, such as `test0`.
 - `enable_aerospike`, `enable_redis`, `enable_postgres`: choose which databases to create.
+- `aerospike_namespace`: namespace to create when Aerospike is enabled. The default is `test`.
 - `postgres_password`: password for the Postgres `bench` user when Postgres is enabled. The default is `benchpassword`.
 - `enable_local_access`: keep this on if you want the workflow summary to include a copy-paste command for connecting from your computer. Turn it off only when benchmark clients run in GCP and nobody needs local access.
 
@@ -71,6 +73,8 @@ enable_postgres  = false
 ```
 
 Use `redis_topology = "sentinel"` for a three-node Redis deployment and `postgres_topology = "replicated"` for a three-node Postgres deployment.
+
+Set `aerospike_namespace` to choose the Aerospike namespace name. If unset, Terraform creates the default `test` namespace.
 
 ## Current Direction
 

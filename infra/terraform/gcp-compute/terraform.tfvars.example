@@ -8,6 +8,8 @@ enable_aerospike = true
 enable_redis     = false
 enable_postgres  = false
 
+aerospike_namespace = "test"
+
 redis_topology    = "standalone"
 postgres_topology = "standalone"
 
