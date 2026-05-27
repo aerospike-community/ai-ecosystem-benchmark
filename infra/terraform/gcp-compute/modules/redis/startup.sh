@@ -63,11 +63,37 @@ id redis >/dev/null 2>&1 || useradd --system --home /var/lib/redis --shell /usr/
 mkdir -p /etc/redis /var/lib/redis /var/log/redis
 chown -R redis:redis /var/lib/redis /var/log/redis
 
+STACK_MODULE_LOAD_LINES=""
+
+append_stack_module() {
+  local module_path="$1"
+  local module_name="$2"
+
+  if [ -f "${module_path}" ]; then
+    STACK_MODULE_LOAD_LINES+="loadmodule ${module_path}"$'\n'
+    log "Redis Stack module enabled: ${module_name}"
+  else
+    log "Redis Stack module not present, skipping: ${module_name}"
+  fi
+}
+
 REDISEARCH_MODULE="/opt/redis-stack/lib/redisearch.so"
 if [ ! -f "${REDISEARCH_MODULE}" ]; then
   log "RediSearch module not found at ${REDISEARCH_MODULE}"
   exit 1
 fi
+
+REDISJSON_MODULE="/opt/redis-stack/lib/rejson.so"
+if [ ! -f "${REDISJSON_MODULE}" ]; then
+  log "RedisJSON module not found at ${REDISJSON_MODULE}"
+  exit 1
+fi
+
+append_stack_module "/opt/redis-stack/lib/rediscompat.so" "RedisCompat"
+append_stack_module "${REDISJSON_MODULE}" "RedisJSON"
+append_stack_module "${REDISEARCH_MODULE}" "RediSearch"
+append_stack_module "/opt/redis-stack/lib/redisbloom.so" "RedisBloom"
+append_stack_module "/opt/redis-stack/lib/redistimeseries.so" "RedisTimeSeries"
 
 REDIS_CLI="/opt/redis-stack/bin/redis-cli"
 if [ ! -x "${REDIS_CLI}" ]; then
@@ -101,7 +127,7 @@ maxmemory-policy noeviction
 dir /var/lib/redis
 loglevel notice
 logfile /var/log/redis/redis-server.log
-loadmodule ${REDISEARCH_MODULE}
+${STACK_MODULE_LOAD_LINES%$'\n'}
 daemonize no
 supervised no
 CONF
@@ -137,15 +163,22 @@ systemctl daemon-reload
 systemctl enable redis-stack-server
 systemctl restart redis-stack-server
 
+verify_redis_stack_ready() {
+  "${REDIS_CLI}" -h 127.0.0.1 -p 6379 FT._LIST >/dev/null 2>&1 || return 1
+  "${REDIS_CLI}" -h 127.0.0.1 -p 6379 FT.DROPINDEX __redis_stack_json_probe >/dev/null 2>&1 || true
+  "${REDIS_CLI}" -h 127.0.0.1 -p 6379 FT.CREATE __redis_stack_json_probe ON JSON PREFIX 1 __redis_stack_json_probe: SCHEMA '$.id' AS id TAG >/dev/null 2>&1 || return 1
+  "${REDIS_CLI}" -h 127.0.0.1 -p 6379 FT.DROPINDEX __redis_stack_json_probe >/dev/null 2>&1 || return 1
+}
+
 for _ in $(seq 1 30); do
-  if "${REDIS_CLI}" -h 127.0.0.1 -p 6379 FT._LIST >/dev/null 2>&1; then
-    log "RediSearch module ready."
+  if verify_redis_stack_ready; then
+    log "Redis Stack search and JSON modules ready."
     break
   fi
   sleep 1
 done
 
-"${REDIS_CLI}" -h 127.0.0.1 -p 6379 FT._LIST >/dev/null
+verify_redis_stack_ready
 
 if [ "${TOPOLOGY}" = "sentinel" ]; then
   log "Configuring redis-sentinel with master ${MASTER_NAME}@${PRIMARY_IP}, quorum ${QUORUM}"

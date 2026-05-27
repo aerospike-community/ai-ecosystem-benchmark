@@ -16,7 +16,7 @@ It is currently pinned to the `firefly-aerospike` GCP project; use `name_prefix`
 - Do not use the private/internal IPs directly from your computer. For local access, run the `gcloud` command printed by the workflow and then connect to `127.0.0.1`.
 - Database ports are not opened to the public internet. Local access uses Google Cloud IAP, so users do not need to find their public IP address or enter a CIDR.
 - Aerospike uses Community Edition packages, so no feature key is required for the current starter stack.
-- Redis uses Redis Stack rather than vanilla Redis OSS so benchmark workloads that depend on RediSearch commands such as `FT._LIST` work out of the box.
+- Redis uses Redis Stack rather than vanilla Redis OSS so benchmark workloads that depend on Redis modules work out of the box. RediSearch and RedisJSON are required; RedisBloom and RedisTimeSeries are loaded when the package provides them.
 - Terraform state uses a GCS backend. Create the state bucket before using the GitHub Action.
 
 ## Manual Workflow Inputs
