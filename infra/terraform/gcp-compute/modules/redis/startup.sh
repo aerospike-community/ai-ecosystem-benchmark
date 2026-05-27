@@ -54,6 +54,8 @@ if [ "${TOPOLOGY}" = "sentinel" ]; then
   apt-get install -y redis-sentinel
 fi
 
+systemctl stop redis-stack-server || true
+systemctl disable redis-stack-server || true
 systemctl stop redis-server || true
 systemctl disable redis-server || true
 

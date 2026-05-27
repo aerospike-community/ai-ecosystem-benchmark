@@ -12,6 +12,17 @@ locals {
   ]
 }
 
+resource "terraform_data" "init_inputs" {
+  input = {
+    local_ssd_count    = var.local_ssd_count
+    master_name        = var.master_name
+    redis_version      = var.redis_version
+    sentinel_quorum    = var.sentinel_quorum
+    startup_script_sha = filesha256("${path.module}/startup.sh")
+    topology           = var.topology
+  }
+}
+
 resource "google_compute_instance" "node" {
   count        = local.node_count
   name         = local.node_names[count.index]
@@ -51,4 +62,8 @@ resource "google_compute_instance" "node" {
   }
 
   metadata_startup_script = file("${path.module}/startup.sh")
+
+  lifecycle {
+    replace_triggered_by = [terraform_data.init_inputs]
+  }
 }
