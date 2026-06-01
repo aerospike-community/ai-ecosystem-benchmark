@@ -262,6 +262,13 @@ jobs:
                 "--ssh-flag=\"-N\""
               ] | join(" ")
             ' endpoints.json)"
+            local_services="$(jq -r '
+              [
+                (if .aerospike != null then "Aerospike `127.0.0.1:3000`" else empty end),
+                (if .postgres != null then "Postgres `127.0.0.1:5432`" else empty end),
+                (if .redis != null then "Redis `127.0.0.1:6379`" else empty end)
+              ] | join(", ")
+            ' endpoints.json)"
 
             if [ -n "${bastion}" ] && [ -n "${ssh_flags}" ]; then
               echo "### Connect From Your Computer"
@@ -273,7 +280,7 @@ jobs:
                 echo "gcloud compute ssh ${bastion} --project ${GCP_PROJECT_ID} --zone ${TF_VAR_zone} --tunnel-through-iap ${ssh_flags}"
                 echo '```'
                 echo
-                echo "Then connect to enabled services on \`127.0.0.1\`: Aerospike \`127.0.0.1:3000\`, Postgres \`127.0.0.1:5432\`, Redis \`127.0.0.1:6379\`."
+                echo "Then connect to enabled services on \`127.0.0.1\`: ${local_services}."
               else
                 echo "\`enable_local_access\` was disabled for this deployment. That is fine if your benchmark client runs in GCP. To connect from your computer, rerun \`apply\` with \`enable_local_access\` set to \`true\`."
               fi
