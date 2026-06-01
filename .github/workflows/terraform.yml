@@ -3,6 +3,10 @@ name: Terraform
 on:
   workflow_dispatch:
     inputs:
+      name_prefix:
+        description: Terraform deployment identifier and prefix for created resources. Reuse the same value to update or destroy the same deployment.
+        required: true
+        type: string
       terraform_action:
         description: Terraform action to run.
         required: true
@@ -22,10 +26,6 @@ on:
         required: true
         type: string
         default: us-central1-a
-      name_prefix:
-        description: Prefix for created resources.
-        required: true
-        type: string
       enable_aerospike:
         description: Provision Aerospike Community Edition.
         required: true
