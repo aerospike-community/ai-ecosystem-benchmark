@@ -215,7 +215,7 @@ jobs:
               echo "### Aerospike"
               echo
               echo "- **Use from GCP/VPC:** \`$(jq -r '.aerospike.connection_string' endpoints.json)\`"
-              echo "- **Use from your computer after running the command below:** \`127.0.0.1:3000\`"
+              echo "- **Use from your computer after running the command below:** \`aerospike://127.0.0.1:3000/$(jq -r '.aerospike.namespace' endpoints.json)\`"
               echo "- **Private host:** \`$(jq -r '.aerospike.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.aerospike.port' endpoints.json)\`"
               echo "- **Namespace:** \`$(jq -r '.aerospike.namespace' endpoints.json)\`"
@@ -264,9 +264,9 @@ jobs:
             ' endpoints.json)"
             local_services="$(jq -r '
               [
-                (if .aerospike != null then "Aerospike `127.0.0.1:3000`" else empty end),
-                (if .postgres != null then "Postgres `127.0.0.1:5432`" else empty end),
-                (if .redis != null then "Redis `127.0.0.1:6379`" else empty end)
+                (if .aerospike != null then "Aerospike `aerospike://127.0.0.1:3000/\(.aerospike.namespace)`" else empty end),
+                (if .postgres != null then "Postgres `postgresql://\(.postgres.username):<password>@127.0.0.1:5432/\(.postgres.database)`" else empty end),
+                (if .redis != null then "Redis `redis://127.0.0.1:6379/0`" else empty end)
               ] | join(", ")
             ' endpoints.json)"
 

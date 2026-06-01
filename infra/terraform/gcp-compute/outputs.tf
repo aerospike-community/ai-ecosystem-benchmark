@@ -27,7 +27,7 @@ output "endpoints" {
       host              = module.aerospike[0].seed_internal_ip
       port              = 3000
       namespace         = var.aerospike_namespace
-      connection_string = "${module.aerospike[0].seed_internal_ip}:3000"
+      connection_string = "aerospike://${module.aerospike[0].seed_internal_ip}:3000/${var.aerospike_namespace}"
       nodes             = module.aerospike[0].nodes
     } : null
   }
