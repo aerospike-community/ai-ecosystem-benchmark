@@ -4,7 +4,17 @@ set -euo pipefail
 log() { echo "[$(date -u +%FT%TZ)] aerospike: $*"; }
 
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+GUEST="http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes"
 HDR=(-H "Metadata-Flavor: Google")
+
+# Marker so reboots skip the internet-dependent install/provisioning steps.
+MARKER=/var/lib/bench-provisioned
+
+# Tell the workflow this node finished provisioning. Uses guest attributes, which
+# require no outbound internet. The workflow polls this before removing Cloud NAT.
+signal_ready() {
+  curl -fsS -X PUT --data "1" "${HDR[@]}" "${GUEST}/bench/ready" >/dev/null 2>&1 || true
+}
 
 NAME_PREFIX=$(curl -fsS "${HDR[@]}" "${META}/name-prefix")
 NODE_INDEX=$(curl -fsS "${HDR[@]}" "${META}/node-index")
@@ -18,6 +28,13 @@ PARTITIONS_PER_SSD=$(curl -fsS "${HDR[@]}" "${META}/device-partitions-per-ssd")
 COMMIT_TO_DEVICE=$(curl -fsS "${HDR[@]}" "${META}/commit-to-device")
 
 log "node ${NODE_INDEX}/${CLUSTER_SIZE}, Aerospike Community Edition ${VERSION}"
+
+if [ -f "${MARKER}" ]; then
+  log "Already provisioned; ensuring service is running (no internet required)."
+  systemctl start aerospike || true
+  signal_ready
+  exit 0
+fi
 
 echo never > /sys/kernel/mm/transparent_hugepage/enabled || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag || true
@@ -126,4 +143,6 @@ CONF
 systemctl enable aerospike
 systemctl start aerospike
 
+touch "${MARKER}"
+signal_ready
 log "Aerospike started."

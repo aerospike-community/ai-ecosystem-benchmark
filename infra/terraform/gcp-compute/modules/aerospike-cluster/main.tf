@@ -31,10 +31,10 @@ resource "google_compute_instance" "node" {
 
   network_interface {
     subnetwork = var.subnet_self_link
-    access_config {}
   }
 
   metadata = {
+    enable-guest-attributes   = "TRUE"
     name-prefix               = var.name_prefix
     node-index                = count.index
     cluster-size              = var.node_count

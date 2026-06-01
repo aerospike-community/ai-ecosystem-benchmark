@@ -14,7 +14,7 @@ It is currently pinned to the `firefly-aerospike` GCP project; use `name_prefix`
 - This is a GCP starter because the benchmark examples in this repo are already GCP Compute based.
 - Endpoints printed by Terraform are private/internal IPs. Use them from benchmark clients running in the same GCP VPC.
 - Do not use the private/internal IPs directly from your computer. For local access, run the `gcloud` command printed by the workflow and then connect to `127.0.0.1`.
-- Database ports are not opened to the public internet. Local access uses Google Cloud IAP, so users do not need to find their public IP address or enter a CIDR.
+- Nodes have no external IP and, after provisioning, no internet access at all. During `apply`, the workflow temporarily enables Cloud NAT (egress only) so the nodes can install software, waits for each node to finish, then removes Cloud NAT so the running nodes have no outbound internet. Local access uses Google Cloud IAP, which reaches the node over its internal IP, so no public IP or CIDR is needed and nothing is exposed to the inbound internet.
 - Aerospike uses Community Edition packages, so no feature key is required for the current starter stack.
 - Redis uses Redis Stack rather than vanilla Redis OSS so benchmark workloads that depend on Redis modules work out of the box. RediSearch and RedisJSON are required; RedisBloom and RedisTimeSeries are loaded when the package provides them.
 - Terraform state uses a GCS backend. Create the state bucket before using the GitHub Action.
@@ -34,7 +34,7 @@ Local access is still private: the databases listen on private/internal IPs, and
 
 - From a benchmark client running in the benchmark VPC, use the private/internal host printed by the workflow.
 - From your computer, run the `gcloud` command from the workflow summary and then connect to `127.0.0.1` on the printed port.
-- Public/external IPs are VM addresses for SSH/debugging. They are not database connection strings because database ports are not open to the internet.
+- Nodes have no external IP and no internet access once provisioning finishes (Cloud NAT exists only during install and is removed automatically). Inbound access is limited to SSH over Google Cloud IAP, gated by GCP IAM.
 
 Postgres always requires a password. Use the `postgres_password` workflow input when connecting. The default is `benchpassword`, so there is no separate Terraform command to fetch it. Changing `postgres_password`, `postgres_db_name`, or `postgres_db_user` after Postgres has already been created will recreate the Postgres nodes so the new login settings take effect.
 

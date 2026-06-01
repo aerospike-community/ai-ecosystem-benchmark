@@ -126,6 +126,9 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -155,20 +158,74 @@ jobs:
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: terraform validate
 
+      # Phase 1 of apply provisions with egress on so the nodes can install
+      # software. destroy tears everything down (egress off matches the locked
+      # down end state). plan just previews the create-time configuration.
       - name: Terraform plan
         working-directory: ${{ env.TERRAFORM_DIR }}
         shell: bash
         run: |
           if [ "${{ inputs.terraform_action }}" = "destroy" ]; then
-            terraform plan -destroy -out=tfplan
+            terraform plan -destroy -var="enable_egress=false" -out=tfplan
           else
-            terraform plan -out=tfplan
+            terraform plan -var="enable_egress=true" -out=tfplan
           fi
 
       - name: Terraform apply
         if: ${{ inputs.terraform_action == 'apply' || inputs.terraform_action == 'destroy' }}
         working-directory: ${{ env.TERRAFORM_DIR }}
         run: terraform apply -auto-approve tfplan
+
+      # Each node writes the bench/ready guest attribute when its startup script
+      # finishes. We poll that here so we only remove egress after installs complete.
+      - name: Wait for database installs to finish
+        if: ${{ inputs.terraform_action == 'apply' }}
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          terraform output -json endpoints > endpoints.json
+          mapfile -t names < <(jq -r '
+            [.aerospike, .postgres, .redis]
+            | map(select(. != null))
+            | .[].nodes[].name
+          ' endpoints.json)
+
+          if [ "${#names[@]}" -eq 0 ]; then
+            echo "No nodes to wait for."
+            exit 0
+          fi
+
+          # ~20 minutes per node (120 * 10s) to cover package installs and replica sync.
+          for name in "${names[@]}"; do
+            echo "Waiting for ${name} to finish provisioning..."
+            ready=""
+            for _ in $(seq 1 120); do
+              ready="$(gcloud compute instances get-guest-attributes "${name}" \
+                --zone "${TF_VAR_zone}" --project "${GCP_PROJECT_ID}" \
+                --query-path=bench/ready 2>/dev/null | awk '/ready/ {print $NF}' || true)"
+              if [ "${ready}" = "1" ]; then
+                echo "${name} is ready."
+                break
+              fi
+              sleep 10
+            done
+            if [ "${ready}" != "1" ]; then
+              echo "::error::${name} did not report ready before the timeout. Egress was left enabled so you can inspect it."
+              exit 1
+            fi
+          done
+
+      # Phase 2: remove Cloud NAT now that installs are done. This only destroys
+      # the NAT/router; the instances and data are untouched.
+      - name: Lock down egress
+        if: ${{ inputs.terraform_action == 'apply' }}
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        shell: bash
+        run: |
+          terraform plan -var="enable_egress=false" -out=tfplan-lockdown
+          terraform apply -auto-approve tfplan-lockdown
 
       - name: Print endpoints
         if: ${{ inputs.terraform_action == 'apply' }}
@@ -188,7 +245,7 @@ jobs:
             local backend="$1"
             jq -r --arg backend "${backend}" '
               .[$backend].nodes[]
-              | "- `\(.name)`: private/internal IP `\(.internal_ip)`, public/external IP `\(.external_ip)`"
+              | "- `\(.name)`: private/internal IP `\(.internal_ip)`"
             ' endpoints.json
           }
 
@@ -206,7 +263,7 @@ jobs:
             echo
             echo "- **Running benchmarks in GCP:** use the private/internal host values below."
             echo "- **Connecting from your computer:** first run the command below, then use \`127.0.0.1\`."
-            echo "- **Public/external IPs:** these are VM addresses for debugging. The database ports are not open to the internet."
+            echo "- **Access control:** the tunnel command still requires GCP IAM/IAP/SSH authorization. Seeing this summary does not grant access."
             echo
             echo "A private/internal IP only works from another machine in the same benchmark VPC. It is not an address your computer can use directly."
             echo

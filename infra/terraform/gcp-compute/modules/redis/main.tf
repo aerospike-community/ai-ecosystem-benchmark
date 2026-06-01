@@ -48,17 +48,17 @@ resource "google_compute_instance" "node" {
 
   network_interface {
     subnetwork = var.subnet_self_link
-    access_config {}
   }
 
   metadata = {
-    name-prefix     = var.name_prefix
-    node-index      = count.index
-    node-role       = local.node_roles[count.index]
-    topology        = var.topology
-    redis-version   = var.redis_version
-    sentinel-quorum = var.sentinel_quorum
-    master-name     = var.master_name
+    enable-guest-attributes = "TRUE"
+    name-prefix             = var.name_prefix
+    node-index              = count.index
+    node-role               = local.node_roles[count.index]
+    topology                = var.topology
+    redis-version           = var.redis_version
+    sentinel-quorum         = var.sentinel_quorum
+    master-name             = var.master_name
   }
 
   metadata_startup_script = file("${path.module}/startup.sh")

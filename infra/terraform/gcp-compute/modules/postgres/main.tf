@@ -52,22 +52,22 @@ resource "google_compute_instance" "node" {
 
   network_interface {
     subnetwork = var.subnet_self_link
-    access_config {}
   }
 
   metadata = {
-    name-prefix            = var.name_prefix
-    node-index             = count.index
-    node-role              = local.node_roles[count.index]
-    topology               = var.topology
-    postgres-major-version = var.postgres_major_version
-    postgres-db-name       = var.db_name
-    postgres-user          = var.db_user
-    postgres-password      = var.db_password
-    replication-user       = var.replication_user
-    replication-password   = var.replication_password
-    synchronous-commit     = var.synchronous_commit
-    vpc-cidr               = var.subnet_cidr
+    enable-guest-attributes = "TRUE"
+    name-prefix             = var.name_prefix
+    node-index              = count.index
+    node-role               = local.node_roles[count.index]
+    topology                = var.topology
+    postgres-major-version  = var.postgres_major_version
+    postgres-db-name        = var.db_name
+    postgres-user           = var.db_user
+    postgres-password       = var.db_password
+    replication-user        = var.replication_user
+    replication-password    = var.replication_password
+    synchronous-commit      = var.synchronous_commit
+    vpc-cidr                = var.subnet_cidr
   }
 
   metadata_startup_script = file("${path.module}/startup.sh")

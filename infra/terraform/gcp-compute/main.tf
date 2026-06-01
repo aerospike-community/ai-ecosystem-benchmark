@@ -20,6 +20,7 @@ module "network" {
   name_prefix         = var.name_prefix
   subnet_cidr         = var.subnet_cidr
   enable_local_access = var.enable_local_access
+  enable_egress       = var.enable_egress
 }
 
 module "redis" {

@@ -37,6 +37,12 @@ variable "enable_local_access" {
   default     = true
 }
 
+variable "enable_egress" {
+  description = "Whether nodes have outbound internet via Cloud NAT. The workflow applies with this on to install software, then re-applies with it off to lock the nodes down. Nodes have no inbound internet access regardless."
+  type        = bool
+  default     = true
+}
+
 variable "labels" {
   description = "Additional GCP labels to apply to instances."
   type        = map(string)

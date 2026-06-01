@@ -9,6 +9,12 @@ variable "enable_local_access" {
   default     = true
 }
 
+variable "enable_egress" {
+  description = "Whether to provision Cloud NAT so nodes have outbound internet (egress only)."
+  type        = bool
+  default     = true
+}
+
 variable "subnet_cidr" {
   description = "Private CIDR for the benchmark subnet."
   type        = string
