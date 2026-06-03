@@ -49,6 +49,29 @@ variable "labels" {
   default     = {}
 }
 
+variable "enable_client" {
+  description = "Whether to provision a private benchmark client VM in the same VPC and zone as the backends."
+  type        = bool
+  default     = false
+}
+
+variable "client_machine_type" {
+  description = "Benchmark client machine type."
+  type        = string
+  default     = "c3-standard-4"
+}
+
+variable "client_boot_disk_size_gb" {
+  description = "Benchmark client boot disk size in GB for uploaded projects and local virtual environments."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.client_boot_disk_size_gb >= 20
+    error_message = "client_boot_disk_size_gb must be at least 20."
+  }
+}
+
 variable "enable_redis" {
   description = "Whether to provision Redis."
   type        = bool

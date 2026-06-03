@@ -82,6 +82,11 @@ on:
         required: true
         type: boolean
         default: true
+      enable_client:
+        description: Provision a private benchmark client VM in the same VPC and zone as the backends.
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -101,6 +106,7 @@ env:
   TF_VAR_zone: ${{ inputs.zone }}
   TF_VAR_name_prefix: ${{ inputs.name_prefix }}
   TF_VAR_enable_local_access: ${{ inputs.enable_local_access }}
+  TF_VAR_enable_client: ${{ inputs.enable_client }}
   TF_VAR_enable_aerospike: ${{ inputs.enable_aerospike }}
   TF_VAR_aerospike_node_count: ${{ inputs.aerospike_node_count }}
   TF_VAR_aerospike_replication_factor: ${{ inputs.aerospike_replication_factor }}
@@ -178,7 +184,7 @@ jobs:
 
       # Each node writes the bench/ready guest attribute when its startup script
       # finishes. We poll that here so we only remove egress after installs complete.
-      - name: Wait for database installs to finish
+      - name: Wait for VM installs to finish
         if: ${{ inputs.terraform_action == 'apply' }}
         working-directory: ${{ env.TERRAFORM_DIR }}
         shell: bash
@@ -186,11 +192,23 @@ jobs:
           set -euo pipefail
 
           terraform output -json endpoints > endpoints.json
-          mapfile -t names < <(jq -r '
-            [.aerospike, .postgres, .redis]
-            | map(select(. != null))
-            | .[].nodes[].name
-          ' endpoints.json)
+          terraform output -json client > client.json
+          mapfile -t names < <(jq -nr '
+            [
+              (
+                $endpoints
+                | [.aerospike, .postgres, .redis]
+                | map(select(. != null))
+                | .[].nodes[].name
+              ),
+              (
+                $client
+                | select(. != null)
+                | .name
+              )
+            ]
+            | .[]
+          ' --argjson endpoints "$(cat endpoints.json)" --argjson client "$(cat client.json)")
 
           if [ "${#names[@]}" -eq 0 ]; then
             echo "No nodes to wait for."
@@ -236,6 +254,7 @@ jobs:
 
           terraform output -json endpoints > endpoints.json
           terraform output -json network > network.json
+          terraform output -json client > client.json
 
           has_backend() {
             jq -e ".$1 != null" endpoints.json >/dev/null
@@ -261,17 +280,43 @@ jobs:
             echo
             echo "### Which Address Should I Use?"
             echo
-            echo "- **Running benchmarks in GCP:** use the private/internal host values below."
+            echo "- **Running benchmarks on the Terraform client VM or another VM in this VPC:** use the private/internal host values below."
             echo "- **Connecting from your computer:** first run the command below, then use \`127.0.0.1\`."
             echo "- **Access control:** the tunnel command still requires GCP IAM/IAP/SSH authorization. Seeing this summary does not grant access."
             echo
             echo "A private/internal IP only works from another machine in the same benchmark VPC. It is not an address your computer can use directly."
             echo
 
+            if jq -e '. != null' client.json >/dev/null; then
+              echo "### Benchmark Client"
+              echo
+              echo "- **Instance:** \`$(jq -r '.name' client.json)\`"
+              echo "- **Private/internal IP:** \`$(jq -r '.internal_ip' client.json)\`"
+              echo "- **Upload directory:** \`$(jq -r '.workdir' client.json)\`"
+              echo "- **Provisioned tools:** Python 3, \`uv\`, \`uvx\`, Git, rsync, build essentials."
+              echo
+              if [ "${TF_VAR_enable_local_access}" = "true" ]; then
+                echo "SSH to the client:"
+                echo
+                echo '```bash'
+                jq -r '.ssh_command' client.json
+                echo '```'
+                echo
+                echo "Upload a local benchmark project directory:"
+                echo
+                echo '```bash'
+                jq -r '.upload_command' client.json
+                echo '```'
+              else
+                echo "\`enable_local_access\` was disabled, so SSH and SCP over IAP are not available from your computer. Rerun \`apply\` with \`enable_local_access\` set to \`true\` when you want to upload a project or SSH to the client."
+              fi
+              echo
+            fi
+
             if has_backend aerospike; then
               echo "### Aerospike"
               echo
-              echo "- **Use from GCP/VPC:** \`$(jq -r '.aerospike.connection_string' endpoints.json)\`"
+              echo "- **Use from the Terraform client VM / GCP VPC:** \`$(jq -r '.aerospike.connection_string' endpoints.json)\`"
               echo "- **Use from your computer after running the command below:** \`aerospike://127.0.0.1:3000/$(jq -r '.aerospike.namespace' endpoints.json)\`"
               echo "- **Private host:** \`$(jq -r '.aerospike.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.aerospike.port' endpoints.json)\`"
@@ -284,7 +329,7 @@ jobs:
             if has_backend postgres; then
               echo "### Postgres"
               echo
-              echo "- **Use from GCP/VPC:** \`$(jq -r '.postgres.connection_string' endpoints.json)\`"
+              echo "- **Use from the Terraform client VM / GCP VPC:** \`$(jq -r '.postgres.connection_string' endpoints.json)\`"
               echo "- **Use from your computer after running the command below:** \`postgresql://$(jq -r '.postgres.username' endpoints.json):<password>@127.0.0.1:5432/$(jq -r '.postgres.database' endpoints.json)\`"
               echo "- **Async from your computer after running the command below:** \`postgresql+asyncpg://$(jq -r '.postgres.username' endpoints.json):<password>@127.0.0.1:5432/$(jq -r '.postgres.database' endpoints.json)\`"
               echo "- **Private host:** \`$(jq -r '.postgres.host' endpoints.json)\`"
@@ -300,7 +345,7 @@ jobs:
             if has_backend redis; then
               echo "### Redis"
               echo
-              echo "- **Use from GCP/VPC:** \`$(jq -r '.redis.url' endpoints.json)\`"
+              echo "- **Use from the Terraform client VM / GCP VPC:** \`$(jq -r '.redis.url' endpoints.json)\`"
               echo "- **Use from your computer after running the command below:** \`redis://127.0.0.1:6379/0\`"
               echo "- **Private host:** \`$(jq -r '.redis.host' endpoints.json)\`"
               echo "- **Port:** \`$(jq -r '.redis.port' endpoints.json)\`"

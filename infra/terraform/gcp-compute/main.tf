@@ -23,6 +23,17 @@ module "network" {
   enable_egress       = var.enable_egress
 }
 
+module "client" {
+  count             = var.enable_client ? 1 : 0
+  source            = "./modules/client"
+  name_prefix       = var.name_prefix
+  zone              = var.zone
+  subnet_self_link  = module.network.subnet_self_link
+  machine_type      = var.client_machine_type
+  boot_disk_size_gb = var.client_boot_disk_size_gb
+  labels            = local.common_labels
+}
+
 module "redis" {
   count            = var.enable_redis ? 1 : 0
   source           = "./modules/redis"

@@ -40,3 +40,20 @@ output "network" {
     subnet_cidr = module.network.subnet_cidr
   }
 }
+
+output "client" {
+  description = "Optional benchmark client VM details."
+  value = var.enable_client ? {
+    name        = module.client[0].name
+    internal_ip = module.client[0].internal_ip
+    workdir     = module.client[0].workdir
+    ssh_command = "gcloud compute ssh ${module.client[0].name} --project ${var.project_id} --zone ${var.zone} --tunnel-through-iap"
+    upload_command = join(" ", [
+      "gcloud compute scp --recurse <local-project-dir>",
+      "${module.client[0].name}:${module.client[0].workdir}/<project-name>",
+      "--project ${var.project_id}",
+      "--zone ${var.zone}",
+      "--tunnel-through-iap",
+    ])
+  } : null
+}
