@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify tag matches pyproject.toml version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "::error::Release workflow must run from a version tag."
+            exit 1
+          fi
+
+          tag="${GITHUB_REF_NAME}"
+          expected="${tag#v}"
+          actual="$(python - <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              project = tomllib.load(f)["project"]
+
+          print(project["version"])
+          PY
+          )"
+
+          if [ "${tag}" = "${expected}" ]; then
+            echo "::error::Release tag must start with 'v' (for example, v${actual})."
+            exit 1
+          fi
+
+          if [ "${expected}" != "${actual}" ]; then
+            echo "::error::Tag ${tag} implies version ${expected}, but pyproject.toml has ${actual}."
+            exit 1
+          fi
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv (and Python ${{ matrix.python-version }})
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Ruff (format check)
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy
+
+      - name: Deptry
+        run: uv run deptry .
+
+      - name: Run tests
+        run: uv run pytest -v
+
+  build:
+    name: Build distributions
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ai-ecosystem-benchmark
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
