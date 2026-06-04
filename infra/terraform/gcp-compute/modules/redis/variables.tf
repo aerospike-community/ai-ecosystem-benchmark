@@ -21,7 +21,7 @@ variable "zone" {
 variable "machine_type" {
   description = "Instance type."
   type        = string
-  default     = "n2d-standard-8"
+  default     = "n2d-standard-16"
 }
 
 variable "boot_image" {
@@ -38,7 +38,7 @@ variable "subnet_self_link" {
 variable "local_ssd_count" {
   description = "Local NVMe SSDs per node for Redis AOF persistence."
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "redis_version" {
