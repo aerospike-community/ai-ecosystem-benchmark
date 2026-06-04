@@ -15,7 +15,7 @@ resource "google_compute_instance" "this" {
     initialize_params {
       image = var.boot_image
       size  = var.boot_disk_size_gb
-      type  = "pd-balanced"
+      type  = "hyperdisk-balanced"
     }
   }
 
