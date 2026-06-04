@@ -58,7 +58,7 @@ variable "enable_client" {
 variable "client_machine_type" {
   description = "Benchmark client machine type."
   type        = string
-  default     = "c3-standard-4"
+  default     = "c4-highcpu-48"
 }
 
 variable "client_boot_disk_size_gb" {

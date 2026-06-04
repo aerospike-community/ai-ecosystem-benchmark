@@ -16,7 +16,7 @@ variable "subnet_self_link" {
 variable "machine_type" {
   description = "Benchmark client machine type."
   type        = string
-  default     = "c3-standard-4"
+  default     = "c4-highcpu-48"
 }
 
 variable "boot_image" {
