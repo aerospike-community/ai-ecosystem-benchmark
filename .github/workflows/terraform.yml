@@ -292,8 +292,10 @@ jobs:
               echo
               echo "- **Instance:** \`$(jq -r '.name' client.json)\`"
               echo "- **Private/internal IP:** \`$(jq -r '.internal_ip' client.json)\`"
+              echo "- **External egress IP:** \`$(jq -r '.external_ip' client.json)\`"
               echo "- **Upload directory:** \`$(jq -r '.workdir' client.json)\`"
               echo "- **Provisioned tools:** Python 3, \`uv\`, \`uvx\`, Git, rsync, build essentials."
+              echo "- **Outbound internet:** enabled for project builds. Database nodes remain private after provisioning."
               echo
               if [ "${TF_VAR_enable_local_access}" = "true" ]; then
                 echo "SSH to the client:"

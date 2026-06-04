@@ -21,6 +21,10 @@ resource "google_compute_instance" "this" {
 
   network_interface {
     subnetwork = var.subnet_self_link
+
+    # The benchmark client needs outbound internet after provisioning to build
+    # uploaded projects. Inbound access is still controlled by firewall rules.
+    access_config {}
   }
 
   metadata = {
