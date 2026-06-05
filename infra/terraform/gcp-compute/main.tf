@@ -53,6 +53,7 @@ module "postgres" {
   zone                 = var.zone
   subnet_self_link     = module.network.subnet_self_link
   subnet_cidr          = module.network.subnet_cidr
+  client_cidrs         = concat([module.network.subnet_cidr], var.enable_client ? [module.network.client_subnet_cidr] : [])
   db_name              = var.postgres_db_name
   db_user              = var.postgres_db_user
   db_password          = var.postgres_password

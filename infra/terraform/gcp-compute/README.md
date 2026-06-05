@@ -8,7 +8,7 @@ This stack brings up benchmark infrastructure on GCP Compute Engine.
 - Optional Aerospike Community Edition nodes.
 - Optional Redis Stack nodes.
 - Optional Postgres nodes.
-- Optional benchmark client VM with Python 3, `uv`, `uvx`, Git, rsync, and build tools.
+- Optional benchmark client VM with Python 3, `uv`, `uvx`, Git, rsync, build tools, and `libpq5`.
 - IAP SSH firewall access when `enable_local_access = true`.
 
 Database nodes use private IPs only. The benchmark client also has no external IP, but keeps outbound internet access through Cloud NAT when enabled.

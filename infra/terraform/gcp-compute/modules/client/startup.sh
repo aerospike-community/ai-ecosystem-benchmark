@@ -26,6 +26,7 @@ apt-get install -y \
   ca-certificates \
   curl \
   git \
+  libpq5 \
   python-is-python3 \
   python3 \
   python3-pip \

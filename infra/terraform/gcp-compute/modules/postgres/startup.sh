@@ -26,6 +26,7 @@ PG_PASSWORD=$(curl -fsS "${HDR[@]}" "${META}/postgres-password")
 REPL_USER=$(curl -fsS "${HDR[@]}" "${META}/replication-user")
 REPL_PASSWORD=$(curl -fsS "${HDR[@]}" "${META}/replication-password")
 SYNC_COMMIT=$(curl -fsS "${HDR[@]}" "${META}/synchronous-commit")
+POSTGRES_CLIENT_CIDRS=$(curl -fsS "${HDR[@]}" "${META}/postgres-client-cidrs")
 VPC_CIDR=$(curl -fsS "${HDR[@]}" "${META}/vpc-cidr")
 
 log "role=${NODE_ROLE} topology=${TOPOLOGY}"
@@ -129,7 +130,14 @@ local   all             postgres                                peer
 local   all             all                                     peer
 host    all             all             127.0.0.1/32            scram-sha-256
 host    all             all             ::1/128                 scram-sha-256
-host    all             all             ${VPC_CIDR}             scram-sha-256
+CONF
+
+  IFS=',' read -ra CLIENT_CIDRS <<< "${POSTGRES_CLIENT_CIDRS}"
+  for cidr in "${CLIENT_CIDRS[@]}"; do
+    [ -n "${cidr}" ] && printf 'host    all             all             %-21s scram-sha-256\n' "${cidr}" >> "${PG_CONF_DIR}/pg_hba.conf"
+  done
+
+  cat >> "${PG_CONF_DIR}/pg_hba.conf" <<CONF
 host    replication     ${REPL_USER}    ${VPC_CIDR}             scram-sha-256
 CONF
 }

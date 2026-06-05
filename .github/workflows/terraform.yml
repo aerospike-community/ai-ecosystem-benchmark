@@ -296,7 +296,7 @@ jobs:
               echo "- **Instance:** \`$(jq -r '.name' client.json)\`"
               echo "- **Private/internal IP:** \`$(jq -r '.internal_ip' client.json)\`"
               echo "- **Upload directory:** \`$(jq -r '.workdir' client.json)\`"
-              echo "- **Provisioned tools:** Python 3, \`uv\`, \`uvx\`, Git, rsync, build essentials."
+              echo "- **Provisioned tools:** Python 3, \`uv\`, \`uvx\`, Git, rsync, build essentials, \`libpq5\`."
               echo "- **Outbound internet:** enabled through Cloud NAT with no external VM IP. Database nodes remain private after provisioning."
               echo
               if [ "${TF_VAR_enable_local_access}" = "true" ]; then

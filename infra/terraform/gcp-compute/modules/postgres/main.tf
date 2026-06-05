@@ -19,6 +19,7 @@ resource "terraform_data" "init_inputs" {
     db_user                = var.db_user
     local_ssd_count        = var.local_ssd_count
     postgres_major_version = var.postgres_major_version
+    postgres_client_cidrs  = var.client_cidrs
     replication_password   = var.replication_password
     replication_user       = var.replication_user
     startup_script_sha     = filesha256("${path.module}/startup.sh")
@@ -67,6 +68,7 @@ resource "google_compute_instance" "node" {
     replication-user        = var.replication_user
     replication-password    = var.replication_password
     synchronous-commit      = var.synchronous_commit
+    postgres-client-cidrs   = join(",", var.client_cidrs)
     vpc-cidr                = var.subnet_cidr
   }
 

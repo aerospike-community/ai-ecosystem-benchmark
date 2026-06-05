@@ -40,6 +40,11 @@ variable "subnet_cidr" {
   type        = string
 }
 
+variable "client_cidrs" {
+  description = "CIDR ranges allowed to connect to Postgres as database clients."
+  type        = list(string)
+}
+
 variable "local_ssd_count" {
   description = "Local NVMe SSDs per node."
   type        = number
