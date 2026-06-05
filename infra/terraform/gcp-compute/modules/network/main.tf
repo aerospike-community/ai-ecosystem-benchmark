@@ -20,8 +20,12 @@ resource "google_compute_subnetwork" "client" {
 
 locals {
   nat_subnet_self_links = merge(
-    var.enable_egress ? { backend = google_compute_subnetwork.this.self_link } : {},
-    var.enable_client_egress ? { client = google_compute_subnetwork.client[0].self_link } : {},
+    var.enable_egress ? {
+      backend = google_compute_subnetwork.this.self_link
+    } : {},
+    var.enable_client_egress ? {
+      client = google_compute_subnetwork.client[0].self_link
+    } : {},
   )
 }
 
@@ -84,5 +88,5 @@ resource "google_compute_firewall" "intra_vpc" {
     [google_compute_subnetwork.this.ip_cidr_range],
     var.enable_client_egress ? [google_compute_subnetwork.client[0].ip_cidr_range] : [],
   )
-  target_tags   = ["bench-node"]
+  target_tags = ["bench-node"]
 }
