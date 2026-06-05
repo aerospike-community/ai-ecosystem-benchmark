@@ -16,11 +16,12 @@ resource "random_password" "postgres_repl" {
 }
 
 module "network" {
-  source              = "./modules/network"
-  name_prefix         = var.name_prefix
-  subnet_cidr         = var.subnet_cidr
-  enable_local_access = var.enable_local_access
-  enable_egress       = var.enable_egress
+  source               = "./modules/network"
+  name_prefix          = var.name_prefix
+  subnet_cidr          = var.subnet_cidr
+  enable_local_access  = var.enable_local_access
+  enable_egress        = var.enable_egress
+  enable_client_egress = var.enable_client
 }
 
 module "client" {
@@ -28,7 +29,7 @@ module "client" {
   source            = "./modules/client"
   name_prefix       = var.name_prefix
   zone              = var.zone
-  subnet_self_link  = module.network.subnet_self_link
+  subnet_self_link  = module.network.client_subnet_self_link
   machine_type      = var.client_machine_type
   boot_disk_size_gb = var.client_boot_disk_size_gb
   labels            = local.common_labels

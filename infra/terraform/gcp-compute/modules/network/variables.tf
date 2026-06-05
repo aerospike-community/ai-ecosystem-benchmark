@@ -20,3 +20,15 @@ variable "subnet_cidr" {
   type        = string
   default     = "10.100.0.0/24"
 }
+
+variable "enable_client_egress" {
+  description = "Whether to provision a dedicated client subnet with persistent outbound internet through Cloud NAT."
+  type        = bool
+  default     = false
+}
+
+variable "client_subnet_cidr" {
+  description = "Private CIDR for the benchmark client subnet."
+  type        = string
+  default     = "10.101.0.0/24"
+}

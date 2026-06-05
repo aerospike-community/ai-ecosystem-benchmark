@@ -1,58 +1,47 @@
 # GCP Compute Terraform Stack
 
-This stack provisions benchmark database backends on GCP Compute Engine:
+This stack brings up benchmark infrastructure on GCP Compute Engine.
 
-- Redis Stack: standalone or three-node Sentinel topology, with RediSearch enabled.
-- Postgres: standalone or three-node primary plus async replicas.
-- Aerospike Community Edition: one or more nodes with mesh heartbeat.
-- Optional benchmark client VM in the same VPC and zone as the backends.
+## What It Creates
 
-The GitHub Action at `.github/workflows/terraform.yml` runs this stack manually.
-It is currently pinned to the `firefly-aerospike` GCP project; use `name_prefix` in the manual trigger to separate test deployments.
+- A VPC with private subnets.
+- Optional Aerospike Community Edition nodes.
+- Optional Redis Stack nodes.
+- Optional Postgres nodes.
+- Optional benchmark client VM with Python 3, `uv`, `uvx`, Git, rsync, and build tools.
+- IAP SSH firewall access when `enable_local_access = true`.
 
-## Important Assumptions
+Database nodes use private IPs only. The benchmark client also has no external IP, but keeps outbound internet access through Cloud NAT when enabled.
 
-- This is a GCP starter because the benchmark examples in this repo are already GCP Compute based.
-- Endpoints printed by Terraform are private/internal IPs. Use them from benchmark clients running in the same GCP VPC, including the optional Terraform-managed client VM.
-- Do not use the private/internal IPs directly from your computer. For local access, run the `gcloud` command printed by the workflow and then connect to `127.0.0.1`.
-- Database nodes have no external IP and no internet access after provisioning. During `apply`, the workflow temporarily enables Cloud NAT (egress only) so the nodes can install software, waits for each node to finish, then removes Cloud NAT. The optional benchmark client keeps outbound internet access so it can download/build projects with tools like `uv`, Git, or package managers. Local access uses Google Cloud IAP, and inbound access remains controlled by firewall rules.
-- Aerospike uses Community Edition packages, so no feature key is required for the current starter stack.
-- Redis uses Redis Stack rather than vanilla Redis OSS so benchmark workloads that depend on Redis modules work out of the box. RediSearch and RedisJSON are required; RedisBloom and RedisTimeSeries are loaded when the package provides them.
-- Terraform state uses a GCS backend. Create the state bucket before using the GitHub Action.
+## Run From GitHub Actions
 
-## Manual Workflow Inputs
+Use `.github/workflows/terraform.yml`.
 
-- `terraform_action`: choose `plan` to preview, `apply` to create/update resources, or `destroy` to delete them.
-- `name_prefix`: short label added to all resources, such as `test0`.
+Main inputs:
+
+- `terraform_action`: `plan`, `apply`, or `destroy`.
+- `name_prefix`: prefix for resource names.
 - `enable_aerospike`, `enable_redis`, `enable_postgres`: choose which databases to create.
-- `aerospike_namespace`: namespace to create when Aerospike is enabled. The default is `test`.
-- `postgres_password`: password for the Postgres `bench` user when Postgres is enabled. The default is `benchpassword`.
-- `enable_local_access`: keep this on if you want the workflow summary to include a copy-paste command for connecting from your computer. Turn it off only when benchmark clients run in GCP and nobody needs local access.
-- `enable_client`: create a benchmark client VM in the same VPC and zone as the backends. The client is provisioned with Python 3, `uv`, `uvx`, Git, rsync, and build essentials, and keeps outbound internet access for project builds.
+- `enable_client`: create the benchmark client VM.
+- `enable_local_access`: print IAP SSH/SCP commands in the workflow summary.
+- `aerospike_namespace`: Aerospike namespace, default `test`.
+- `redis_topology`: `standalone` or `sentinel`.
+- `postgres_topology`: `standalone` or `replicated`.
+- `postgres_password`: password for the Postgres `bench` user.
 
-Local access is still private: the databases listen on private/internal IPs, and the `gcloud` command forwards local ports through Google Cloud IAP. You do not need to open database ports to the public internet.
+After `apply`, the workflow summary prints endpoint details and client access commands.
 
-## Which Endpoint To Use
+## Connect
 
-- From the Terraform-managed benchmark client VM, or any benchmark client running in the benchmark VPC, use the private/internal host printed by the workflow.
-- From your computer, run the `gcloud` command from the workflow summary and then connect to `127.0.0.1` on the printed port.
-- Database nodes have no external IP and no internet access after provisioning. Cloud NAT exists only during install and is removed automatically. The Terraform-managed benchmark client keeps outbound internet access for downloads/builds. Inbound access is limited to SSH over Google Cloud IAP, gated by GCP IAM.
+From the Terraform-managed client VM, use the private/internal hosts printed by the workflow.
 
-If `enable_client` is true, the workflow summary also prints commands to SSH to the client and upload a local project directory to `/srv/benchmarks` with `gcloud compute scp --recurse ... --tunnel-through-iap`. Keep `enable_local_access` true when you want to SSH or upload from your computer. Once connected, use the private/internal backend hosts printed in the same summary.
+From your computer, use the `gcloud` tunnel command printed by the workflow, then connect to `127.0.0.1`.
 
-Postgres always requires a password. Use the `postgres_password` workflow input when connecting. The default is `benchpassword`, so there is no separate Terraform command to fetch it. Changing `postgres_password`, `postgres_db_name`, or `postgres_db_user` after Postgres has already been created will recreate the Postgres nodes so the new login settings take effect.
-
-## GitHub Secrets
-
-Configure these repository secrets:
-
-- `GCP_WORKLOAD_IDENTITY_PROVIDER`: Workload Identity Provider resource name for GitHub OIDC.
-- `GCP_SERVICE_ACCOUNT`: Service account email used by Terraform.
-- `TF_STATE_BUCKET`: GCS bucket for Terraform state.
-
-The service account needs permissions to read/write the state bucket and manage Compute Engine resources. For a first pass in a sandbox project, `roles/compute.admin`, `roles/iam.serviceAccountUser`, and storage access to the state bucket are usually enough.
+If `enable_client = true`, the workflow summary also prints commands to SSH to the client and upload a project directory to `/srv/benchmarks`.
 
 ## Local Usage
+
+Copy `terraform.tfvars.example` to a local `.tfvars` file and adjust the enabled services.
 
 ```bash
 cd infra/terraform/gcp-compute
@@ -64,11 +53,7 @@ terraform apply -var-file=terraform.tfvars
 terraform output endpoints
 ```
 
-Copy `terraform.tfvars.example` to a local `.tfvars` file and adjust the enabled backends.
-
-## Backend Selection
-
-Each backend can be toggled independently:
+Example service selection:
 
 ```hcl
 enable_aerospike = true
@@ -77,10 +62,10 @@ enable_postgres  = false
 enable_client    = true
 ```
 
-Use `redis_topology = "sentinel"` for a three-node Redis deployment and `postgres_topology = "replicated"` for a three-node Postgres deployment.
+## GitHub Secrets
 
-Set `aerospike_namespace` to choose the Aerospike namespace name. If unset, Terraform creates the default `test` namespace.
+Configure these repository secrets before running the GitHub Action:
 
-## Current Direction
-
-You are not off track. The one architectural choice to make explicit early is where benchmarks run. Provisioning infrastructure from GitHub Actions is fine, but the benchmark clients should be close to the databases, usually inside the same VPC, so private IPs and realistic latency are preserved.
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`
+- `GCP_SERVICE_ACCOUNT`
+- `TF_STATE_BUCKET`

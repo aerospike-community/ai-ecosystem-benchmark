@@ -36,8 +36,9 @@ output "endpoints" {
 output "network" {
   description = "Benchmark VPC details."
   value = {
-    name        = module.network.network_name
-    subnet_cidr = module.network.subnet_cidr
+    name               = module.network.network_name
+    subnet_cidr        = module.network.subnet_cidr
+    client_subnet_cidr = module.network.client_subnet_cidr
   }
 }
 

@@ -235,8 +235,8 @@ jobs:
             fi
           done
 
-      # Phase 2: remove Cloud NAT now that installs are done. This only destroys
-      # the NAT/router; the instances and data are untouched.
+      # Phase 2: remove backend-node Cloud NAT now that installs are done. If a
+      # client VM exists, its dedicated subnet keeps NAT for project downloads.
       - name: Lock down egress
         if: ${{ inputs.terraform_action == 'apply' }}
         working-directory: ${{ env.TERRAFORM_DIR }}
@@ -276,7 +276,10 @@ jobs:
             echo "- **Region:** \`${TF_VAR_region}\`"
             echo "- **Zone:** \`${TF_VAR_zone}\`"
             echo "- **Network:** \`$(jq -r '.name' network.json)\`"
-            echo "- **Subnet:** \`$(jq -r '.subnet_cidr' network.json)\`"
+            echo "- **Backend subnet:** \`$(jq -r '.subnet_cidr' network.json)\`"
+            if jq -e '.client_subnet_cidr != null' network.json >/dev/null; then
+              echo "- **Client subnet:** \`$(jq -r '.client_subnet_cidr' network.json)\`"
+            fi
             echo
             echo "### Which Address Should I Use?"
             echo
@@ -292,10 +295,9 @@ jobs:
               echo
               echo "- **Instance:** \`$(jq -r '.name' client.json)\`"
               echo "- **Private/internal IP:** \`$(jq -r '.internal_ip' client.json)\`"
-              echo "- **External egress IP:** \`$(jq -r '.external_ip' client.json)\`"
               echo "- **Upload directory:** \`$(jq -r '.workdir' client.json)\`"
               echo "- **Provisioned tools:** Python 3, \`uv\`, \`uvx\`, Git, rsync, build essentials."
-              echo "- **Outbound internet:** enabled for project builds. Database nodes remain private after provisioning."
+              echo "- **Outbound internet:** enabled through Cloud NAT with no external VM IP. Database nodes remain private after provisioning."
               echo
               if [ "${TF_VAR_enable_local_access}" = "true" ]; then
                 echo "SSH to the client:"
