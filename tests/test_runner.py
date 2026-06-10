@@ -1,6 +1,8 @@
+import csv
 import random
 import time
 import warnings
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -119,6 +121,8 @@ def _make_runner(workload: BaseBenchmarkWorkload) -> BenchmarkRunner:
         ({"worker_thread_count": 0}, "worker_thread_count"),
         ({"runtime_per_function": 0}, "runtime_per_function"),
         ({"runtime_per_function": -5}, "runtime_per_function"),
+        ({"metrics_window_seconds": 0}, "metrics_window_seconds"),
+        ({"metrics_window_seconds": -1}, "metrics_window_seconds"),
     ],
 )
 def test_runner_rejects_non_positive_params(override: dict[str, Any], error_substring: str) -> None:
@@ -365,6 +369,193 @@ class RandomLatencyWorkload(BaseBenchmarkWorkload):
 
     def postgres_test_query(self) -> None:
         self._sleep_random(5, 20)
+
+
+# ---------------------------------------------------------------------------
+# Windowed metrics + CSV export
+# ---------------------------------------------------------------------------
+
+
+class SingleAerospikeWorkload(BaseBenchmarkWorkload):
+    """Workload with a single aerospike test for focused windowed-metrics tests."""
+
+    def __init__(self) -> None:
+        super().__init__(aerospike_connection_string="aerospike://localhost:3000")
+        self.call_count = 0
+        self._lock = Lock()
+
+    def setup(self) -> None:
+        return None
+
+    def between_benchmarks(self) -> None:
+        return None
+
+    def teardown(self) -> None:
+        return None
+
+    def aerospike_test_only(self) -> None:
+        with self._lock:
+            self.call_count += 1
+
+
+class SlowFirstCallWorkload(BaseBenchmarkWorkload):
+    """First call sleeps past the runtime window; later calls are instant."""
+
+    def __init__(self, sleep_seconds: float) -> None:
+        super().__init__(aerospike_connection_string="aerospike://localhost:3000")
+        self.sleep_seconds = sleep_seconds
+        self.call_count = 0
+        self._lock = Lock()
+
+    def setup(self) -> None:
+        return None
+
+    def between_benchmarks(self) -> None:
+        return None
+
+    def teardown(self) -> None:
+        return None
+
+    def aerospike_test_slow_first(self) -> None:
+        with self._lock:
+            self.call_count += 1
+            is_first = self.call_count == 1
+        if is_first:
+            time.sleep(self.sleep_seconds)
+
+
+_CSV_HEADER = [
+    "backend",
+    "test",
+    "window_start_sec",
+    "window_seconds",
+    "calls",
+    "failures",
+    "calls_per_sec",
+    "p50_ms",
+    "p90_ms",
+    "p99_ms",
+]
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
+
+
+def test_windowed_metrics_writes_csv_with_expected_schema(tmp_path: Path) -> None:
+    workload = SingleAerospikeWorkload()
+    csv_path = tmp_path / "metrics.csv"
+    runner = BenchmarkRunner(
+        queries_per_second=4,
+        scheduler_thread_count=1,
+        worker_thread_count=4,
+        runtime_per_function=2,
+        workload=workload,
+        metrics_window_seconds=1,
+        csv_output_path=str(csv_path),
+    )
+
+    runner.run()
+
+    rows = _read_csv_rows(csv_path)
+    assert list(rows[0].keys()) == _CSV_HEADER
+    assert len(rows) == 2
+    assert rows[0]["backend"] == "aerospike"
+    assert rows[0]["test"] == "aerospike_test_only"
+    assert rows[0]["window_start_sec"] == "0"
+    assert rows[1]["window_start_sec"] == "1"
+    assert rows[0]["window_seconds"] == "1"
+    assert int(rows[0]["calls"]) + int(rows[1]["calls"]) == workload.call_count
+    assert runner.metrics["aerospike"]["aerospike_test_only"].count() == workload.call_count
+
+
+def test_windowed_metrics_default_csv_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    workload = SingleAerospikeWorkload()
+    runner = BenchmarkRunner(
+        queries_per_second=2,
+        scheduler_thread_count=1,
+        worker_thread_count=2,
+        runtime_per_function=1,
+        workload=workload,
+        metrics_window_seconds=1,
+    )
+
+    runner.run()
+
+    default_path = tmp_path / "benchmark_metrics_windows.csv"
+    assert default_path.exists()
+    rows = _read_csv_rows(default_path)
+    assert len(rows) == 1
+
+
+def test_windowed_metrics_buckets_failures_by_completion_window(tmp_path: Path) -> None:
+    workload = AlternatingFailureWorkload()
+    csv_path = tmp_path / "metrics.csv"
+    runner = BenchmarkRunner(
+        queries_per_second=6,
+        scheduler_thread_count=1,
+        worker_thread_count=2,
+        runtime_per_function=1,
+        workload=workload,
+        metrics_window_seconds=1,
+        csv_output_path=str(csv_path),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        runner.run()
+
+    rows = _read_csv_rows(csv_path)
+    assert len(rows) == 1
+    assert int(rows[0]["calls"]) == 3
+    assert int(rows[0]["failures"]) == 3
+    assert int(rows[0]["calls_per_sec"]) == 6
+    histogram = runner.metrics["aerospike"]["aerospike_test_flaky"]
+    assert histogram.count() == 3
+    assert runner.failures["aerospike"]["aerospike_test_flaky"] == 3
+
+
+def test_windowed_metrics_clamps_late_completions_to_last_window(tmp_path: Path) -> None:
+    workload = SlowFirstCallWorkload(sleep_seconds=1.5)
+    csv_path = tmp_path / "metrics.csv"
+    runner = BenchmarkRunner(
+        queries_per_second=2,
+        scheduler_thread_count=1,
+        worker_thread_count=1,
+        runtime_per_function=1,
+        workload=workload,
+        metrics_window_seconds=1,
+        csv_output_path=str(csv_path),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        runner.run()
+
+    rows = _read_csv_rows(csv_path)
+    assert len(rows) == 1
+    assert int(rows[0]["calls"]) == 2
+    assert workload.call_count == 2
+
+
+def test_windowed_metrics_disabled_does_not_create_csv(tmp_path: Path) -> None:
+    workload = SingleAerospikeWorkload()
+    csv_path = tmp_path / "metrics.csv"
+    runner = BenchmarkRunner(
+        queries_per_second=2,
+        scheduler_thread_count=1,
+        worker_thread_count=2,
+        runtime_per_function=1,
+        workload=workload,
+        csv_output_path=str(csv_path),
+    )
+
+    runner.run()
+
+    assert not csv_path.exists()
+    assert runner.metrics["aerospike"]["aerospike_test_only"].count() == 2
 
 
 def test_print_metrics_demo_with_random_latencies() -> None:
