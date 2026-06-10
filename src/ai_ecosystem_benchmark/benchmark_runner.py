@@ -1,10 +1,11 @@
 """Benchmark runner."""
 
+import math
 import time
 import warnings
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from threading import Barrier, Lock
 
 from ai_ecosystem_benchmark._latency_histogram import LatencyHistogram
 from ai_ecosystem_benchmark.base_benchmark_workload import BaseBenchmarkWorkload, BenchmarkTest
@@ -19,6 +20,36 @@ _COARSE_SLEEP_FLOOR_NS = 1_500_000  # 1.5 ms
 # in steady state, so 50 ms is well above the noise floor for any qps. At low qps where
 # the per-thread interval already exceeds this, the relative term dominates instead.
 _CONGESTION_DISPATCH_LAG_FLOOR_NS = 50_000_000  # 50 ms
+# A run is treated as worker-pool saturated when peak in-flight concurrency reaches at
+# least this fraction of ``worker_thread_count``. Peak in-flight can never exceed the cap
+# (a call only counts as in-flight once a worker picks it up), so hitting the cap means
+# the pool was full and subsequent calls genuinely queued -- the only case where raising
+# ``worker_thread_count`` actually helps.
+_CONGESTION_SATURATION_RATIO = 0.9
+# Dispatch lag below the saturation point comes from something other than a worker
+# shortage (GC pauses, OS scheduler jitter, backend latency spikes). A single such blip is
+# noise and must not warn; we only flag it when it affects at least this fraction of all
+# calls, i.e. it is sustained enough to actually skew the latency distribution.
+_CONGESTION_MIN_LAG_FRACTION = 0.01  # 1% of calls
+# An absolute floor on laggy dispatches required before any warning fires, so tiny runs
+# can't trip on one or two samples even when the fraction looks large.
+_CONGESTION_MIN_LAG_COUNT = 5
+
+# --- Worker-pool right-sizing -------------------------------------------------------------
+# The pool is sized from Little's Law (concurrency = qps x latency) using a short latency
+# probe, then multiplied by this headroom to absorb latency variance and brief bursts so
+# steady-state load never has to grow the pool mid-run.
+_WORKER_HEADROOM = 3.0
+# Never size the pool below this (clamped to the configured cap). Keeps fast, sub-millisecond
+# ops from being throttled by a tiny auto-sized pool.
+_MIN_WORKER_THREADS = 32
+# Latency-probe settings. A short, low-concurrency burst estimates per-call latency without
+# itself saturating anything; probe calls are never recorded in the metrics.
+_CALIBRATION_CALLS = 64
+_CALIBRATION_CONCURRENCY = 16
+# If every probe call fails (so latency can't be estimated), fall back to this many workers
+# (clamped to the cap) rather than the raw cap, which may be pathologically large.
+_CALIBRATION_FALLBACK_WORKERS = 256
 
 
 class BenchmarkRunner:
@@ -30,6 +61,15 @@ class BenchmarkRunner:
     measured from the *scheduled* start time (not the actual dispatch time), so any
     queueing delay caused by saturated workers is reflected in the metrics. This is the
     standard correction for coordinated omission.
+
+    To keep the client from polluting its own measurements, the worker pool is right-sized
+    per test (from a short latency probe via Little's Law, clamped to ``worker_thread_count``)
+    and fully pre-warmed before timing starts. Pre-warming matters because
+    ``ThreadPoolExecutor`` spawns workers lazily inside ``submit``; under load that
+    thread-creation cost serializes on the executor's internal lock and shows up as dispatch
+    lag. Materializing the threads up front moves that cost out of the timed window, and the
+    fixed (right-sized) pool bounds peak concurrency so a slow backend can't balloon the
+    thread count into an out-of-memory condition.
     """
 
     def __init__(
@@ -39,6 +79,7 @@ class BenchmarkRunner:
         worker_thread_count: int,
         runtime_per_function: int,
         workload: BaseBenchmarkWorkload,
+        calibrate: bool = True,
     ) -> None:
         if queries_per_second <= 0:
             raise ValueError("queries_per_second must be positive")
@@ -51,9 +92,13 @@ class BenchmarkRunner:
 
         self.queries_per_second = queries_per_second
         self.scheduler_thread_count = scheduler_thread_count
+        # Treated as the *maximum* (and safety cap) worker count. When ``calibrate`` is on,
+        # the pool is right-sized from a latency probe and clamped to this ceiling; the
+        # whole pool is then pre-warmed so dispatch never pays thread-creation cost mid-run.
         self.worker_thread_count = worker_thread_count
         self.runtime_per_function = runtime_per_function
         self.workload = workload
+        self.calibrate = calibrate
         # Per-test latency histograms (constant memory regardless of call volume).
         # Only *successful* calls are recorded; failed calls are tracked separately.
         self.metrics: dict[str, dict[str, LatencyHistogram]] = defaultdict(
@@ -125,6 +170,8 @@ class BenchmarkRunner:
         if total_calls <= 0:
             return 0
 
+        effective_workers = self._right_size_workers(backend, test, total_calls)
+
         scheduler_count = self.scheduler_thread_count
         # ``queries_per_second`` is the *total* per-second load across the whole runner.
         # We split it evenly across scheduler threads: each thread paces independently at
@@ -146,28 +193,29 @@ class BenchmarkRunner:
         # one call per scheduler thread, which is the Little's-Law tipping point for the
         # queue growing rather than draining.
         congestion_threshold_ns = max(_CONGESTION_DISPATCH_LAG_FLOOR_NS, per_thread_interval_ns)
-        # Plain bool + lock with double-checked locking lets us emit a single warning
-        # per test even when many workers cross the threshold simultaneously.
-        congestion_warned = False
-        congestion_lock = Lock()
+        # Aggregate congestion stats, evaluated once after the run (not per-sample) so a
+        # lone jittery pickup can't trip a warning. ``peak_in_flight`` distinguishes a pool
+        # that genuinely saturated (queueing is real) from lag that more workers can't fix
+        # (GC/OS jitter/backend spikes). All four are guarded by ``stats_lock``.
+        stats_lock = Lock()
+        in_flight = 0
+        peak_in_flight = 0
+        lag_count = 0
+        worst_lag_ns = 0
 
         def execute(scheduled_start_ns: int) -> None:
-            nonlocal congestion_warned, failure_count, first_failure_warned
+            nonlocal failure_count, first_failure_warned
+            nonlocal in_flight, peak_in_flight, lag_count, worst_lag_ns
             dispatch_ns = time.perf_counter_ns()
             dispatch_lag_ns = dispatch_ns - scheduled_start_ns
-            if dispatch_lag_ns > congestion_threshold_ns and not congestion_warned:
-                with congestion_lock:
-                    if not congestion_warned:
-                        congestion_warned = True
-                        warnings.warn(
-                            f"{backend}.{test.__name__}: worker pool congestion detected "
-                            f"(dispatch lag {dispatch_lag_ns / 1_000_000:.1f} ms > "
-                            f"{congestion_threshold_ns / 1_000_000:.1f} ms threshold). "
-                            f"Increase worker_thread_count "
-                            f"(currently {self.worker_thread_count}) to avoid queueing "
-                            f"delays polluting latency measurements.",
-                            stacklevel=2,
-                        )
+            with stats_lock:
+                in_flight += 1
+                if in_flight > peak_in_flight:
+                    peak_in_flight = in_flight
+                if dispatch_lag_ns > congestion_threshold_ns:
+                    lag_count += 1
+                    if dispatch_lag_ns > worst_lag_ns:
+                        worst_lag_ns = dispatch_lag_ns
             try:
                 test()
             except Exception as exc:
@@ -184,11 +232,18 @@ class BenchmarkRunner:
             else:
                 end_ns = time.perf_counter_ns()
                 histogram.record(end_ns - scheduled_start_ns)
+            finally:
+                with stats_lock:
+                    in_flight -= 1
 
         with (
-            ThreadPoolExecutor(max_workers=self.worker_thread_count) as worker_pool,
+            ThreadPoolExecutor(max_workers=effective_workers) as worker_pool,
             ThreadPoolExecutor(max_workers=scheduler_count) as scheduler_pool,
         ):
+            # Materialize every worker thread before timing so dispatch never pays
+            # OS thread-creation cost on the hot path (see class docstring).
+            _prewarm_pool(worker_pool, effective_workers)
+
             # Give every scheduler thread a small head start so the first batch of
             # deadlines is genuinely in the future even after thread start-up cost.
             origin_ns = time.perf_counter_ns() + 10_000_000  # 10 ms
@@ -209,7 +264,176 @@ class BenchmarkRunner:
             for future in scheduler_futures:
                 future.result()
 
+        self._maybe_warn_congestion(
+            backend=backend,
+            test=test,
+            total_calls=total_calls,
+            congestion_threshold_ns=congestion_threshold_ns,
+            effective_workers=effective_workers,
+            peak_in_flight=peak_in_flight,
+            lag_count=lag_count,
+            worst_lag_ns=worst_lag_ns,
+        )
         return failure_count
+
+    def _right_size_workers(self, backend: str, test: BenchmarkTest, total_calls: int) -> int:
+        """Choose how many worker threads to pre-warm for ``test``.
+
+        With calibration off, the configured ``worker_thread_count`` is used as-is. With it
+        on, a short latency probe estimates per-call latency and Little's Law gives the
+        concurrency the offered load needs (``qps x latency``); that is scaled by
+        ``_WORKER_HEADROOM`` and clamped to ``[_MIN_WORKER_THREADS, worker_thread_count]``.
+        The result is a pool large enough to never queue under steady load yet small enough
+        that a slow backend can't explode the thread count.
+        """
+        if not self.calibrate:
+            return self.worker_thread_count
+
+        probe_calls = min(_CALIBRATION_CALLS, total_calls)
+        p95_latency_ns = self._probe_latency_ns(test, probe_calls) if probe_calls > 0 else None
+        if p95_latency_ns is None:
+            effective = self._clamp_worker_count(_CALIBRATION_FALLBACK_WORKERS)
+            print(
+                f"  calibration: {backend}.{test.__name__}: probe inconclusive; "
+                f"pre-warming {effective} workers (cap {self.worker_thread_count})"
+            )
+            return effective
+
+        little_concurrency = self.queries_per_second * (p95_latency_ns / _NS_PER_SECOND)
+        effective = self._clamp_worker_count(math.ceil(little_concurrency * _WORKER_HEADROOM))
+        print(
+            f"  calibration: {backend}.{test.__name__}: p95 latency "
+            f"~{p95_latency_ns / 1_000_000:.1f} ms -> pre-warming {effective} workers "
+            f"(cap {self.worker_thread_count})"
+        )
+        return effective
+
+    def _clamp_worker_count(self, value: int) -> int:
+        """Clamp ``value`` to ``[min(_MIN_WORKER_THREADS, cap), cap]``."""
+        cap = self.worker_thread_count
+        return max(min(value, cap), min(_MIN_WORKER_THREADS, cap))
+
+    def _probe_latency_ns(self, test: BenchmarkTest, probe_calls: int) -> int | None:
+        """Run a brief, low-concurrency burst of ``test`` and return its p95 latency in ns.
+
+        Probe calls are *not* recorded in the metrics; failures are ignored. Returns
+        ``None`` if every probe call failed (so latency can't be estimated).
+        """
+        latencies_ns: list[int] = []
+        latencies_lock = Lock()
+
+        def probe() -> None:
+            start_ns = time.perf_counter_ns()
+            try:
+                test()
+            except Exception:
+                return
+            elapsed_ns = time.perf_counter_ns() - start_ns
+            with latencies_lock:
+                latencies_ns.append(elapsed_ns)
+
+        probe_concurrency = min(self.worker_thread_count, _CALIBRATION_CONCURRENCY, probe_calls)
+        with ThreadPoolExecutor(max_workers=probe_concurrency) as probe_pool:
+            for future in [probe_pool.submit(probe) for _ in range(probe_calls)]:
+                future.result()
+
+        if not latencies_ns:
+            return None
+        latencies_ns.sort()
+        index = min(len(latencies_ns) - 1, int(len(latencies_ns) * 0.95))
+        return latencies_ns[index]
+
+    def _maybe_warn_congestion(
+        self,
+        *,
+        backend: str,
+        test: BenchmarkTest,
+        total_calls: int,
+        congestion_threshold_ns: int,
+        effective_workers: int,
+        peak_in_flight: int,
+        lag_count: int,
+        worst_lag_ns: int,
+    ) -> None:
+        """Emit at most one congestion warning per test, targeted at the real cause.
+
+        With a fixed, pre-warmed pool the diagnosis is clean. Peak in-flight concurrency can
+        never exceed the pool size (a call is only in-flight once a worker picks it up), so
+        reaching it means calls genuinely queued. We branch three ways: the pool hit the
+        ``worker_thread_count`` cap (raise it), the auto-sized pool was exceeded (calibration
+        under-estimated; re-run or raise the cap), or there was lag without saturation (a
+        spare worker existed, so it is GC/jitter/backend variance and more workers won't
+        help). Every branch requires *sustained* lag, never a single jittery sample.
+        """
+        if lag_count <= 0:
+            return
+        # Require sustained lag -- an absolute floor and a fraction of all calls -- so a
+        # one-off blip (a single delayed pickup) can never trip a warning.
+        min_sustained = max(_CONGESTION_MIN_LAG_COUNT, total_calls * _CONGESTION_MIN_LAG_FRACTION)
+        if lag_count < min_sustained:
+            return
+
+        worst_lag_ms = worst_lag_ns / 1_000_000
+        threshold_ms = congestion_threshold_ns / 1_000_000
+        saturated = peak_in_flight >= effective_workers * _CONGESTION_SATURATION_RATIO
+        at_cap = effective_workers >= self.worker_thread_count
+
+        if saturated and at_cap:
+            warnings.warn(
+                f"{backend}.{test.__name__}: worker pool saturated at the worker_thread_count "
+                f"cap ({self.worker_thread_count}); {lag_count}/{total_calls} calls queued "
+                f"(worst dispatch lag {worst_lag_ms:.1f} ms > {threshold_ms:.1f} ms). The "
+                f"offered load needs more concurrency than the cap allows -- raise "
+                f"worker_thread_count (or lower qps) so queueing stops polluting measurements.",
+                stacklevel=2,
+            )
+            return
+
+        if saturated:
+            warnings.warn(
+                f"{backend}.{test.__name__}: the auto-sized worker pool ({effective_workers}) "
+                f"saturated; {lag_count}/{total_calls} calls queued (worst dispatch lag "
+                f"{worst_lag_ms:.1f} ms > {threshold_ms:.1f} ms). Per-call latency under load "
+                f"ran higher than the calibration probe predicted, so the pool was under-sized "
+                f"-- re-run (calibration will resize) or raise worker_thread_count. The recorded "
+                f"latencies for this test include some queueing.",
+                stacklevel=2,
+            )
+            return
+
+        warnings.warn(
+            f"{backend}.{test.__name__}: sustained dispatch lag on {lag_count}/{total_calls} "
+            f"calls (worst {worst_lag_ms:.1f} ms > {threshold_ms:.1f} ms) while the pre-warmed "
+            f"worker pool never saturated (peak in-flight {peak_in_flight} of "
+            f"{effective_workers}). A worker was always available, so this is not thread "
+            f"starvation and raising worker_thread_count will not help. Likely causes are GC "
+            f"pauses, OS scheduler jitter, or backend latency spikes; reduce per-call work or "
+            f"raise scheduler_thread_count for smoother pacing.",
+            stacklevel=2,
+        )
+
+
+def _prewarm_pool(pool: ThreadPoolExecutor, count: int) -> None:
+    """Force ``pool`` to create ``count`` worker threads before any real work is dispatched.
+
+    Submits ``count`` tasks that all block on a shared barrier, so the pool must spin up
+    ``count`` distinct threads to run them simultaneously; the barrier then releases them
+    back to the pool as warm, idle workers. This moves OS thread-creation cost out of the
+    timed run, where it would otherwise serialize inside ``ThreadPoolExecutor.submit`` (each
+    growth blocks in ``Thread.start`` under the executor lock) and inflate dispatch lag.
+
+    ``count`` must be ``<= pool``'s ``max_workers`` or the barrier can never release.
+    """
+    if count <= 0:
+        return
+    barrier = Barrier(count + 1)
+
+    def _hold() -> None:
+        barrier.wait()
+
+    for _ in range(count):
+        pool.submit(_hold)
+    barrier.wait()
 
 
 def _ns_to_ms(value_ns: int) -> int:
