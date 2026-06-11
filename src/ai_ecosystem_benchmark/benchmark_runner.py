@@ -27,8 +27,9 @@ _CONGESTION_MIN_LAG_COUNT = 5
 _SUSTAINED_THROUGHPUT_RATIO = 0.9
 
 # --- Worker-pool sizing -------------------------------------------------------------------
-# Little's Law headroom applied to the warmup latency probe.
-_WORKER_HEADROOM = 3.0
+# Little's Law headroom over the warmup probe. The probe runs at low concurrency, so
+# load-time latency runs higher; this margin absorbs that growth for moderate ops.
+_WORKER_HEADROOM = 4.0
 # Minimum auto-sized pool, clamped by ``worker_thread_count``.
 _MIN_WORKER_THREADS = 32
 # Warmup probe settings; probe calls are not recorded in benchmark metrics.
@@ -77,8 +78,12 @@ class BenchmarkRunner:
         self.worker_thread_count = worker_thread_count
         self.runtime_per_function = runtime_per_function
         self.workload = workload
-        # Only successful calls are recorded; failures are tracked separately.
+        # Response latency, measured from a call's scheduled start; includes client queue wait.
         self.metrics: dict[str, dict[str, LatencyHistogram]] = defaultdict(
+            lambda: defaultdict(LatencyHistogram)
+        )
+        # Service latency, measured from worker pickup; the backend's true per-call cost.
+        self.service_metrics: dict[str, dict[str, LatencyHistogram]] = defaultdict(
             lambda: defaultdict(LatencyHistogram)
         )
         self.failures: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
@@ -103,9 +108,14 @@ class BenchmarkRunner:
     def print_metrics(self) -> None:
         """Print collected per-test latency metrics (in milliseconds) to stdout."""
         print("\n=== Benchmark Metrics (ms) ===")
+        print(
+            "  response = scheduled-time latency (incl. client queue wait); "
+            "service = execution-only latency"
+        )
         for backend in _BACKENDS:
             print(f"\n[{backend}]")
             tests = self.metrics.get(backend, {})
+            service_tests = self.service_metrics.get(backend, {})
             failures_for_backend = self.failures.get(backend, {})
             if not tests and not failures_for_backend:
                 print("  (no tests run)")
@@ -114,15 +124,12 @@ class BenchmarkRunner:
             test_names = sorted(set(tests) | set(failures_for_backend))
             for test_name in test_names:
                 histogram = tests.get(test_name)
+                service_histogram = service_tests.get(test_name)
                 count = histogram.count() if histogram else 0
                 failure_count = failures_for_backend.get(test_name, 0)
-                p50_ms = _ns_to_ms(histogram.percentile_ns(50)) if histogram else 0
-                p90_ms = _ns_to_ms(histogram.percentile_ns(90)) if histogram else 0
-                p99_ms = _ns_to_ms(histogram.percentile_ns(99)) if histogram else 0
-                print(
-                    f"  {test_name}: calls={count} failures={failure_count}  "
-                    f"p50={p50_ms}ms  p90={p90_ms}ms  p99={p99_ms}ms"
-                )
+                print(f"  {test_name}: calls={count} failures={failure_count}")
+                print(f"      response {_format_percentiles(histogram)}")
+                print(f"      service  {_format_percentiles(service_histogram)}")
 
     def _run_test(self, backend: str, test: BenchmarkTest) -> None:
         total_calls = self.queries_per_second * self.runtime_per_function
@@ -131,7 +138,10 @@ class BenchmarkRunner:
             f"({self.queries_per_second} qps for {self.runtime_per_function}s)"
         )
         histogram = self.metrics[backend][test.__name__]
-        failure_count = self._run_scheduled(backend, test, total_calls, histogram)
+        service_histogram = self.service_metrics[backend][test.__name__]
+        failure_count = self._run_scheduled(
+            backend, test, total_calls, histogram, service_histogram
+        )
         if failure_count:
             self.failures[backend][test.__name__] += failure_count
 
@@ -141,6 +151,7 @@ class BenchmarkRunner:
         test: BenchmarkTest,
         total_calls: int,
         histogram: LatencyHistogram,
+        service_histogram: LatencyHistogram,
     ) -> int:
         if total_calls <= 0:
             return 0
@@ -194,7 +205,9 @@ class BenchmarkRunner:
                     )
             else:
                 end_ns = time.perf_counter_ns()
+                # Response latency includes queue wait; service latency is execution only.
                 histogram.record(end_ns - scheduled_start_ns)
+                service_histogram.record(end_ns - dispatch_ns)
             finally:
                 with stats_lock:
                     in_flight -= 1
@@ -214,9 +227,9 @@ class BenchmarkRunner:
                     _prewarm_pool(shard, size)
             except (MemoryError, RuntimeError) as exc:
                 warnings.warn(
-                    f"{backend}.{test.__name__}: skipped: failed to pre-warm {pool_size} "
-                    f"workers ({type(exc).__name__}: {exc}). Likely client OS/RAM limit. "
-                    f"Action: lower worker_thread_count or use a larger client.",
+                    f"{backend}.{test.__name__}: could not create {pool_size} worker threads "
+                    f"({type(exc).__name__}: {exc}); client thread or memory limit reached. "
+                    f"Lower worker_thread_count or use a larger client.",
                     stacklevel=2,
                 )
                 return 0
@@ -359,42 +372,44 @@ class BenchmarkRunner:
 
         if not kept_up and not saturated:
             warnings.warn(
-                f"{backend}.{test.__name__}: target qps not sustained ({rate}); "
-                f"worker pool not saturated (peak {peak_in_flight}/{pool_size}); "
-                f"worst dispatch lag {worst_lag_ms:.1f} ms. Likely limit: backend, DB "
-                f"connection pool, or per-call client work. Action: inspect backend/client "
-                f"pool metrics; lowering qps may be required. worker_thread_count is not the "
-                f"knob.",
+                f"{backend}.{test.__name__}: {rate}; worker pool idle "
+                f"(peak {peak_in_flight}/{pool_size}), worst dispatch lag "
+                f"{worst_lag_ms:.1f} ms. The backend or DB connection pool cannot sustain "
+                f"the target rate.",
                 stacklevel=2,
             )
             return
 
         if saturated and at_cap:
             warnings.warn(
-                f"{backend}.{test.__name__}: worker pool saturated at cap "
-                f"({pool_size}; {rate}); worst dispatch lag {worst_lag_ms:.1f} ms. "
-                f"Likely limit: client worker capacity. Action: raise worker_thread_count "
-                f"or use a larger client; otherwise lower qps.",
+                f"{backend}.{test.__name__}: worker pool hit the {pool_size}-thread cap; "
+                f"{rate}; worst dispatch lag {worst_lag_ms:.1f} ms. The client worker cap is "
+                f"the bottleneck. Raise worker_thread_count or use a larger client.",
                 stacklevel=2,
             )
             return
 
         if saturated:
+            if not kept_up:
+                warnings.warn(
+                    f"{backend}.{test.__name__}: worker pool saturated ({pool_size}); "
+                    f"{rate}; worst dispatch lag {worst_lag_ms:.1f} ms. Per-call latency grew "
+                    f"under load: the backend or DB connection pool is the bottleneck.",
+                    stacklevel=2,
+                )
+                return
             warnings.warn(
-                f"{backend}.{test.__name__}: sized worker pool saturated "
-                f"({pool_size}; {rate}); worst dispatch lag {worst_lag_ms:.1f} ms. "
-                f"Likely limit: warmup underestimated load-time latency. Action: rerun; "
-                f"if repeated, raise worker_thread_count.",
+                f"{backend}.{test.__name__}: worker pool saturated below cap ({pool_size}); "
+                f"{rate}; worst dispatch lag {worst_lag_ms:.1f} ms. The warmup probe "
+                f"under-sized the pool for load-time latency.",
                 stacklevel=2,
             )
             return
 
         warnings.warn(
-            f"{backend}.{test.__name__}: sustained dispatch lag but target qps was met "
-            f"({rate}); worker pool peak {peak_in_flight}/{pool_size}; worst "
-            f"{worst_lag_ms:.1f} ms > {threshold_ms:.1f} ms. Likely limit: scheduler "
-            f"jitter, GC, or latency spikes. Action: inspect host noise; consider raising "
-            f"scheduler_thread_count.",
+            f"{backend}.{test.__name__}: target qps met ({rate}) but sustained dispatch lag "
+            f"(worst {worst_lag_ms:.1f} ms > {threshold_ms:.1f} ms). Likely host scheduler "
+            f"jitter or GC pauses.",
             stacklevel=2,
         )
 
@@ -422,6 +437,16 @@ def _prewarm_pool(pool: ThreadPoolExecutor, count: int) -> None:
 
 def _ns_to_ms(value_ns: int) -> int:
     return round(value_ns / 1_000_000)
+
+
+def _format_percentiles(histogram: LatencyHistogram | None) -> str:
+    """Format p50/p90/p99 (ms) for a histogram, or zeros when it is missing/empty."""
+    if histogram is None:
+        return "p50=0ms  p90=0ms  p99=0ms"
+    p50_ms = _ns_to_ms(histogram.percentile_ns(50))
+    p90_ms = _ns_to_ms(histogram.percentile_ns(90))
+    p99_ms = _ns_to_ms(histogram.percentile_ns(99))
+    return f"p50={p50_ms}ms  p90={p90_ms}ms  p99={p99_ms}ms"
 
 
 def _sleep_until_ns(target_ns: int) -> None:

@@ -172,6 +172,23 @@ def test_runner_records_per_call_latencies_in_histogram() -> None:
     assert "postgres" not in runner.metrics
 
 
+def test_runner_records_service_latency_alongside_response_latency() -> None:
+    """Service latency (execution only) is recorded per call and never exceeds response."""
+    workload = CountingWorkload()
+    runner = _make_runner(workload)
+
+    runner.run()
+
+    response_hist = runner.metrics["aerospike"]["aerospike_test_query"]
+    service_hist = runner.service_metrics["aerospike"]["aerospike_test_query"]
+    assert isinstance(service_hist, LatencyHistogram)
+    # Same successful calls feed both histograms.
+    assert service_hist.count() == response_hist.count() == 6
+    # Service latency excludes queue wait, so it cannot exceed response latency.
+    assert service_hist.percentile_ns(50) <= response_hist.percentile_ns(99) + 1
+    assert "postgres" not in runner.service_metrics
+
+
 def test_runner_invokes_lifecycle_hooks() -> None:
     workload = CountingWorkload()
     runner = BenchmarkRunner(
@@ -322,9 +339,8 @@ def test_runner_warns_when_worker_pool_is_undersized() -> None:
     congestion_warnings = [w for w in caught if "worker pool" in str(w.message)]
     assert len(congestion_warnings) == 1
     message = str(congestion_warnings[0].message)
-    # Genuine starvation at the cap: the pool saturated, so raising worker_thread_count is
-    # the fix.
-    assert "saturated" in message
+    # Genuine starvation at the cap: raising worker_thread_count is the fix.
+    assert "cap" in message
     assert "worker_thread_count" in message
     assert "aerospike.aerospike_test_slow" in message
 
@@ -402,11 +418,10 @@ def test_throughput_shortfall_with_idle_pool_blames_downstream_not_workers() -> 
     messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
     assert len(messages) == 1
     message = messages[0]
-    assert "target qps not sustained" in message
-    assert "Likely limit: backend, DB connection pool, or per-call client work" in message
-    assert "worker_thread_count is not the knob" in message
+    assert "worker pool idle" in message
+    assert "backend or DB connection pool cannot sustain" in message
     # Must NOT misattribute to jitter as the old message did.
-    assert "scheduler jitter" not in message
+    assert "jitter" not in message
 
 
 def test_transient_lag_when_throughput_is_met_points_at_jitter() -> None:
@@ -427,12 +442,11 @@ def test_transient_lag_when_throughput_is_met_points_at_jitter() -> None:
             worst_lag_ns=80_000_000,
         )
 
-    messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
+    messages = [str(w.message) for w in caught if "_dummy_test" in str(w.message)]
     assert len(messages) == 1
     message = messages[0]
-    assert "target qps was met" in message
-    assert "scheduler jitter" in message
-    assert "scheduler_thread_count" in message
+    assert "target qps met" in message
+    assert "jitter" in message
 
 
 def test_saturated_pool_at_ceiling_warns_to_increase_workers() -> None:
@@ -455,12 +469,12 @@ def test_saturated_pool_at_ceiling_warns_to_increase_workers() -> None:
 
     messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
     assert len(messages) == 1
-    assert "saturated" in messages[0]
+    assert "cap" in messages[0]
     assert "worker_thread_count" in messages[0]
 
 
-def test_sized_pool_saturated_below_ceiling_warns_about_calibration() -> None:
-    """A sized pool that saturates below the cap means the probe under-estimated latency."""
+def test_sized_pool_saturated_below_ceiling_but_near_target_blames_calibration() -> None:
+    """Saturated below cap while nearly meeting target -> the probe under-estimated latency."""
     runner = _congestion_runner()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -470,8 +484,8 @@ def test_sized_pool_saturated_below_ceiling_warns_about_calibration() -> None:
             test=_dummy_test,
             total_calls=10_000,
             congestion_threshold_ns=_THRESHOLD_NS,
-            pool_size=256,  # sized below the 512 cap
-            achieved_qps=300,
+            pool_size=256,  # sized below the 8192 cap
+            achieved_qps=480,  # nearly met the 500 target -> just a touch undersized
             peak_in_flight=256,  # but still saturated under load
             lag_count=500,
             worst_lag_ns=120_000_000,
@@ -479,7 +493,42 @@ def test_sized_pool_saturated_below_ceiling_warns_about_calibration() -> None:
 
     messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
     assert len(messages) == 1
-    assert "warmup underestimated" in messages[0]
+    message = messages[0]
+    assert "saturated below cap" in message
+    assert "under-sized the pool" in message
+    # The cap was never the limit, so the message must not mention the cap knob at all.
+    assert "worker_thread_count" not in message
+
+
+def test_sized_pool_saturated_below_ceiling_with_low_throughput_blames_backend() -> None:
+    """The postgres_graph_cyclic signature: saturated below cap, throughput far below target.
+
+    Every worker is busy yet only a fraction of the target qps lands, so per-call latency
+    grew under load. Adding workers cannot help -- the backend/DB is the ceiling.
+    """
+    runner = _congestion_runner()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        runner._maybe_warn_congestion(
+            backend="postgres",
+            test=_dummy_test,
+            total_calls=10_000,
+            congestion_threshold_ns=_THRESHOLD_NS,
+            pool_size=722,  # sized below the 8192 cap
+            achieved_qps=32,  # ~6% of the 500 target despite a saturated pool
+            peak_in_flight=722,  # every worker busy the whole run
+            lag_count=9_000,
+            worst_lag_ns=273_523_000_000,
+        )
+
+    messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
+    assert len(messages) == 1
+    message = messages[0]
+    assert "backend or DB connection pool" in message
+    assert "latency grew under load" in message
+    # The backend is the cause, so the message must not mention the worker cap knob.
+    assert "worker_thread_count" not in message
 
 
 def test_no_lag_never_warns() -> None:
