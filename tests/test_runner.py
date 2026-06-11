@@ -1,3 +1,4 @@
+import math
 import random
 import time
 import warnings
@@ -9,7 +10,7 @@ import pytest
 
 from ai_ecosystem_benchmark import BaseBenchmarkWorkload, BenchmarkRunner
 from ai_ecosystem_benchmark._latency_histogram import LatencyHistogram
-from ai_ecosystem_benchmark.benchmark_runner import _prewarm_pool
+from ai_ecosystem_benchmark.benchmark_runner import _WORKERS_PER_SHARD, _prewarm_pool
 
 # ---------------------------------------------------------------------------
 # Helper workloads
@@ -401,9 +402,9 @@ def test_throughput_shortfall_with_idle_pool_blames_downstream_not_workers() -> 
     messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
     assert len(messages) == 1
     message = messages[0]
-    assert "could not sustain" in message
-    assert "downstream" in message
-    assert "will not help" in message
+    assert "target qps not sustained" in message
+    assert "Likely limit: backend, DB connection pool, or per-call client work" in message
+    assert "worker_thread_count is not the knob" in message
     # Must NOT misattribute to jitter as the old message did.
     assert "scheduler jitter" not in message
 
@@ -429,9 +430,9 @@ def test_transient_lag_when_throughput_is_met_points_at_jitter() -> None:
     messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
     assert len(messages) == 1
     message = messages[0]
-    assert "not thread starvation" in message
-    assert "will not help" in message
-    assert "jitter" in message
+    assert "target qps was met" in message
+    assert "scheduler jitter" in message
+    assert "scheduler_thread_count" in message
 
 
 def test_saturated_pool_at_ceiling_warns_to_increase_workers() -> None:
@@ -478,7 +479,7 @@ def test_sized_pool_saturated_below_ceiling_warns_about_calibration() -> None:
 
     messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
     assert len(messages) == 1
-    assert "under-sized" in messages[0]
+    assert "warmup underestimated" in messages[0]
 
 
 def test_no_lag_never_warns() -> None:
@@ -545,6 +546,30 @@ def test_prewarm_pool_materializes_all_worker_threads() -> None:
         assert len(pool._threads) == 0
         _prewarm_pool(pool, 16)
         assert len(pool._threads) == 16
+
+
+def test_shard_layout_single_shard_below_threshold() -> None:
+    """A pool at or below the per-shard bound stays a single shard (unsharded behavior)."""
+    runner = _congestion_runner()
+
+    assert runner._shard_layout(0) == []
+    assert runner._shard_layout(1) == [1]
+    assert runner._shard_layout(_WORKERS_PER_SHARD) == [_WORKERS_PER_SHARD]
+
+
+def test_shard_layout_splits_large_pools_and_sums_exactly() -> None:
+    """Large pools split into shards of <= _WORKERS_PER_SHARD that sum to the pool size."""
+    runner = _congestion_runner()
+
+    for pool_size in (_WORKERS_PER_SHARD + 1, 298, 669, 1000):
+        layout = runner._shard_layout(pool_size)
+        # Every shard is within the bound, none is empty, and the total is preserved exactly
+        # (so we never pre-warm more threads than the cap allows).
+        assert sum(layout) == pool_size
+        assert all(0 < size <= _WORKERS_PER_SHARD for size in layout)
+        assert len(layout) == math.ceil(pool_size / _WORKERS_PER_SHARD)
+        # Shard sizes are balanced: they differ by at most one thread.
+        assert max(layout) - min(layout) <= 1
 
 
 def test_warmup_sizes_pool_far_below_a_huge_cap() -> None:
