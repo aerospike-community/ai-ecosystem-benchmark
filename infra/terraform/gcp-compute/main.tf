@@ -57,6 +57,7 @@ module "postgres" {
   db_name              = var.postgres_db_name
   db_user              = var.postgres_db_user
   db_password          = var.postgres_password
+  max_connections      = var.postgres_max_connections
   replication_password = var.enable_postgres ? random_password.postgres_repl[0].result : ""
   labels               = local.common_labels
 }

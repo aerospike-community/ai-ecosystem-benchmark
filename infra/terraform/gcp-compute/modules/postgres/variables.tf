@@ -98,6 +98,17 @@ variable "synchronous_commit" {
   }
 }
 
+variable "max_connections" {
+  description = "postgresql.conf max_connections. Must exceed the benchmark's worker pool size."
+  type        = number
+  default     = 600
+
+  validation {
+    condition     = var.max_connections >= 100 && var.max_connections <= 10000
+    error_message = "max_connections must be between 100 and 10000."
+  }
+}
+
 variable "labels" {
   description = "GCP labels applied to each instance."
   type        = map(string)

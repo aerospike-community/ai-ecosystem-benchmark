@@ -26,6 +26,7 @@ PG_PASSWORD=$(curl -fsS "${HDR[@]}" "${META}/postgres-password")
 REPL_USER=$(curl -fsS "${HDR[@]}" "${META}/replication-user")
 REPL_PASSWORD=$(curl -fsS "${HDR[@]}" "${META}/replication-password")
 SYNC_COMMIT=$(curl -fsS "${HDR[@]}" "${META}/synchronous-commit")
+PG_MAX_CONNECTIONS=$(curl -fsS "${HDR[@]}" "${META}/postgres-max-connections")
 POSTGRES_CLIENT_CIDRS=$(curl -fsS "${HDR[@]}" "${META}/postgres-client-cidrs")
 VPC_CIDR=$(curl -fsS "${HDR[@]}" "${META}/vpc-cidr")
 
@@ -95,7 +96,7 @@ ident_file = '${PG_CONF_DIR}/pg_ident.conf'
 external_pid_file = '/var/run/postgresql/${PG_MAJOR}-main.pid'
 listen_addresses = '*'
 port = 5432
-max_connections = 200
+max_connections = ${PG_MAX_CONNECTIONS}
 password_encryption = scram-sha-256
 shared_buffers = 8GB
 effective_cache_size = 24GB

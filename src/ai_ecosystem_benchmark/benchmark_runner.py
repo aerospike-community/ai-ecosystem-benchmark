@@ -2,7 +2,6 @@
 
 import math
 import time
-import warnings
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
@@ -199,9 +198,8 @@ class BenchmarkRunner:
                     if should_warn:
                         first_failure_warned = True
                 if should_warn:
-                    warnings.warn(
-                        f"{backend}.{test.__name__}: first failure: {type(exc).__name__}: {exc}",
-                        stacklevel=2,
+                    _emit_warning(
+                        f"{backend}.{test.__name__}: first failure: {type(exc).__name__}: {exc}"
                     )
             else:
                 end_ns = time.perf_counter_ns()
@@ -226,11 +224,10 @@ class BenchmarkRunner:
                 for shard, size in zip(worker_shards, shard_sizes, strict=True):
                     _prewarm_pool(shard, size)
             except (MemoryError, RuntimeError) as exc:
-                warnings.warn(
+                _emit_warning(
                     f"{backend}.{test.__name__}: could not create {pool_size} worker threads "
                     f"({type(exc).__name__}: {exc}); client thread or memory limit reached. "
-                    f"Lower worker_thread_count or use a larger client.",
-                    stacklevel=2,
+                    f"Lower worker_thread_count or use a larger client."
                 )
                 return 0
 
@@ -371,46 +368,41 @@ class BenchmarkRunner:
         rate = f"achieved ~{achieved_qps:.0f} of {target_qps} target qps"
 
         if not kept_up and not saturated:
-            warnings.warn(
+            _emit_warning(
                 f"{backend}.{test.__name__}: {rate}; worker pool idle "
                 f"(peak {peak_in_flight}/{pool_size}), worst dispatch lag "
                 f"{worst_lag_ms:.1f} ms. The backend or DB connection pool cannot sustain "
-                f"the target rate.",
-                stacklevel=2,
+                f"the target rate."
             )
             return
 
         if saturated and at_cap:
-            warnings.warn(
+            _emit_warning(
                 f"{backend}.{test.__name__}: worker pool hit the {pool_size}-thread cap; "
                 f"{rate}; worst dispatch lag {worst_lag_ms:.1f} ms. The client worker cap is "
-                f"the bottleneck. Raise worker_thread_count or use a larger client.",
-                stacklevel=2,
+                f"the bottleneck. Raise worker_thread_count or use a larger client."
             )
             return
 
         if saturated:
             if not kept_up:
-                warnings.warn(
+                _emit_warning(
                     f"{backend}.{test.__name__}: worker pool saturated ({pool_size}); "
                     f"{rate}; worst dispatch lag {worst_lag_ms:.1f} ms. Per-call latency grew "
-                    f"under load: the backend or DB connection pool is the bottleneck.",
-                    stacklevel=2,
+                    f"under load: the backend or DB connection pool is the bottleneck."
                 )
                 return
-            warnings.warn(
+            _emit_warning(
                 f"{backend}.{test.__name__}: worker pool saturated below cap ({pool_size}); "
                 f"{rate}; worst dispatch lag {worst_lag_ms:.1f} ms. The warmup probe "
-                f"under-sized the pool for load-time latency.",
-                stacklevel=2,
+                f"under-sized the pool for load-time latency."
             )
             return
 
-        warnings.warn(
+        _emit_warning(
             f"{backend}.{test.__name__}: target qps met ({rate}) but sustained dispatch lag "
             f"(worst {worst_lag_ms:.1f} ms > {threshold_ms:.1f} ms). Likely host scheduler "
-            f"jitter or GC pauses.",
-            stacklevel=2,
+            f"jitter or GC pauses."
         )
 
 
@@ -433,6 +425,11 @@ def _prewarm_pool(pool: ThreadPoolExecutor, count: int) -> None:
         barrier.abort()
         raise
     barrier.wait()
+
+
+def _emit_warning(message: str) -> None:
+    """Print a user-facing benchmark warning without Python warning metadata."""
+    print(f"WARNING: {message}")
 
 
 def _ns_to_ms(value_ns: int) -> int:

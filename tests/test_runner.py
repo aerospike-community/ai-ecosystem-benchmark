@@ -1,7 +1,6 @@
 import math
 import random
 import time
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from typing import Any
@@ -244,9 +243,7 @@ def test_runner_counts_failures_and_excludes_them_from_histogram() -> None:
         workload=workload,
     )
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        runner.run()
+    runner.run()
 
     histogram = runner.metrics["aerospike"]["aerospike_test_flaky"]
     # The warmup probe consumes 6 calls first (failures ignored, not recorded); the 6 timed
@@ -256,7 +253,9 @@ def test_runner_counts_failures_and_excludes_them_from_histogram() -> None:
     assert runner.failures["aerospike"]["aerospike_test_flaky"] == 3
 
 
-def test_runner_surfaces_first_failure_as_warning() -> None:
+def test_runner_surfaces_first_failure_as_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     workload = AlternatingFailureWorkload()
     runner = BenchmarkRunner(
         queries_per_second=4,
@@ -266,13 +265,10 @@ def test_runner_surfaces_first_failure_as_warning() -> None:
         workload=workload,
     )
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner.run()
+    runner.run()
 
-    first_failure_warnings = [w for w in caught if "first failure" in str(w.message)]
-    assert len(first_failure_warnings) == 1
-    message = str(first_failure_warnings[0].message)
+    message = capsys.readouterr().out
+    assert message.count("first failure") == 1
     assert "RuntimeError" in message
     assert "simulated backend failure" in message
 
@@ -304,9 +300,7 @@ def test_runner_does_not_crash_when_all_calls_fail() -> None:
         workload=AlwaysFailingWorkload(),
     )
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        runner.run()
+    runner.run()
 
     assert runner.failures["aerospike"]["aerospike_test_broken"] == 4
     assert runner.metrics["aerospike"]["aerospike_test_broken"].count() == 0
@@ -317,7 +311,9 @@ def test_runner_does_not_crash_when_all_calls_fail() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_runner_warns_when_worker_pool_is_undersized() -> None:
+def test_runner_warns_when_worker_pool_is_undersized(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """A 1-worker pool faced with 10 qps of 300ms tests must report a *saturated* pool.
 
     worker_thread_count=1 caps the pool at one thread, so the warmup sizes (and pre-warms)
@@ -332,30 +328,26 @@ def test_runner_warns_when_worker_pool_is_undersized() -> None:
         workload=workload,
     )
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner.run()
+    runner.run()
 
-    congestion_warnings = [w for w in caught if "worker pool" in str(w.message)]
-    assert len(congestion_warnings) == 1
-    message = str(congestion_warnings[0].message)
+    message = capsys.readouterr().out
+    assert message.count("WARNING:") == 1
     # Genuine starvation at the cap: raising worker_thread_count is the fix.
     assert "cap" in message
     assert "worker_thread_count" in message
     assert "aerospike.aerospike_test_slow" in message
 
 
-def test_runner_does_not_warn_when_worker_pool_is_adequate() -> None:
+def test_runner_does_not_warn_when_worker_pool_is_adequate(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """A well-provisioned pool should not trip the congestion warning."""
     workload = CountingWorkload()
     runner = _make_runner(workload)
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner.run()
+    runner.run()
 
-    congestion_warnings = [w for w in caught if "worker pool" in str(w.message)]
-    assert congestion_warnings == []
+    assert "WARNING:" not in capsys.readouterr().out
 
 
 def _congestion_runner() -> BenchmarkRunner:
@@ -376,131 +368,128 @@ def _dummy_test() -> None:
 _THRESHOLD_NS = 50_000_000  # 50 ms floor, matching the runner default at these settings.
 
 
-def test_single_dispatch_lag_blip_does_not_warn() -> None:
+def test_single_dispatch_lag_blip_does_not_warn(capsys: pytest.CaptureFixture[str]) -> None:
     """The reported false positive: one 50.5ms pickup is noise, not congestion."""
     runner = _congestion_runner()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner._maybe_warn_congestion(
-            backend="aerospike",
-            test=_dummy_test,
-            total_calls=10_000,
-            congestion_threshold_ns=_THRESHOLD_NS,
-            pool_size=8192,
-            achieved_qps=500,  # kept up fine
-            peak_in_flight=80,  # nowhere near the pool size -> not starvation
-            lag_count=1,  # a single blip -> below the sustained floor
-            worst_lag_ns=50_500_000,
-        )
+    runner._maybe_warn_congestion(
+        backend="aerospike",
+        test=_dummy_test,
+        total_calls=10_000,
+        congestion_threshold_ns=_THRESHOLD_NS,
+        pool_size=8192,
+        achieved_qps=500,  # kept up fine
+        peak_in_flight=80,  # nowhere near the pool size -> not starvation
+        lag_count=1,  # a single blip -> below the sustained floor
+        worst_lag_ns=50_500_000,
+    )
 
-    assert [w for w in caught if "worker pool" in str(w.message)] == []
+    assert "WARNING:" not in capsys.readouterr().out
 
 
-def test_throughput_shortfall_with_idle_pool_blames_downstream_not_workers() -> None:
+def test_throughput_shortfall_with_idle_pool_blames_downstream_not_workers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """The cyclic signature: huge backlog while the pool sits idle -> downstream bottleneck."""
     runner = _congestion_runner()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner._maybe_warn_congestion(
-            backend="aerospike",
-            test=_dummy_test,
-            total_calls=10_000,
-            congestion_threshold_ns=_THRESHOLD_NS,
-            pool_size=286,
-            achieved_qps=49,  # ~10% of the 500 target -> could not keep up
-            peak_in_flight=31,  # pool ~90% idle the whole time
-            lag_count=9_989,
-            worst_lag_ns=205_941_700_000,
-        )
+    runner._maybe_warn_congestion(
+        backend="aerospike",
+        test=_dummy_test,
+        total_calls=10_000,
+        congestion_threshold_ns=_THRESHOLD_NS,
+        pool_size=286,
+        achieved_qps=49,  # ~10% of the 500 target -> could not keep up
+        peak_in_flight=31,  # pool ~90% idle the whole time
+        lag_count=9_989,
+        worst_lag_ns=205_941_700_000,
+    )
 
-    messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
-    assert len(messages) == 1
-    message = messages[0]
+    message = capsys.readouterr().out
+    assert message.count("WARNING:") == 1
     assert "worker pool idle" in message
     assert "backend or DB connection pool cannot sustain" in message
     # Must NOT misattribute to jitter as the old message did.
     assert "jitter" not in message
 
 
-def test_transient_lag_when_throughput_is_met_points_at_jitter() -> None:
+def test_transient_lag_when_throughput_is_met_points_at_jitter(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Sustained lag but the run still kept up + pool idle -> genuine transient jitter."""
     runner = _congestion_runner()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner._maybe_warn_congestion(
-            backend="aerospike",
-            test=_dummy_test,
-            total_calls=10_000,
-            congestion_threshold_ns=_THRESHOLD_NS,
-            pool_size=8192,
-            achieved_qps=495,  # met the 500 target
-            peak_in_flight=80,  # pool never saturated
-            lag_count=200,  # 2% of calls -> sustained, above the 1% floor
-            worst_lag_ns=80_000_000,
-        )
+    runner._maybe_warn_congestion(
+        backend="aerospike",
+        test=_dummy_test,
+        total_calls=10_000,
+        congestion_threshold_ns=_THRESHOLD_NS,
+        pool_size=8192,
+        achieved_qps=495,  # met the 500 target
+        peak_in_flight=80,  # pool never saturated
+        lag_count=200,  # 2% of calls -> sustained, above the 1% floor
+        worst_lag_ns=80_000_000,
+    )
 
-    messages = [str(w.message) for w in caught if "_dummy_test" in str(w.message)]
-    assert len(messages) == 1
-    message = messages[0]
+    message = capsys.readouterr().out
+    assert message.count("WARNING:") == 1
     assert "target qps met" in message
     assert "jitter" in message
 
 
-def test_saturated_pool_at_ceiling_warns_to_increase_workers() -> None:
+def test_saturated_pool_at_ceiling_warns_to_increase_workers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """When peak in-flight reaches the pool ceiling, raising worker_thread_count is the fix."""
     runner = _congestion_runner()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner._maybe_warn_congestion(
-            backend="aerospike",
-            test=_dummy_test,
-            total_calls=10_000,
-            congestion_threshold_ns=_THRESHOLD_NS,
-            pool_size=8192,  # pool ceiling (e.g. calibrate=False uses worker_thread_count)
-            achieved_qps=300,  # fell behind because the pool was the limit
-            peak_in_flight=8192,  # hit the ceiling -> genuine client thread starvation
-            lag_count=500,
-            worst_lag_ns=120_000_000,
-        )
+    runner._maybe_warn_congestion(
+        backend="aerospike",
+        test=_dummy_test,
+        total_calls=10_000,
+        congestion_threshold_ns=_THRESHOLD_NS,
+        pool_size=8192,  # pool ceiling (e.g. calibrate=False uses worker_thread_count)
+        achieved_qps=300,  # fell behind because the pool was the limit
+        peak_in_flight=8192,  # hit the ceiling -> genuine client thread starvation
+        lag_count=500,
+        worst_lag_ns=120_000_000,
+    )
 
-    messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
-    assert len(messages) == 1
-    assert "cap" in messages[0]
-    assert "worker_thread_count" in messages[0]
+    message = capsys.readouterr().out
+    assert message.count("WARNING:") == 1
+    assert "cap" in message
+    assert "worker_thread_count" in message
 
 
-def test_sized_pool_saturated_below_ceiling_but_near_target_blames_calibration() -> None:
+def test_sized_pool_saturated_below_ceiling_but_near_target_blames_calibration(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Saturated below cap while nearly meeting target -> the probe under-estimated latency."""
     runner = _congestion_runner()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner._maybe_warn_congestion(
-            backend="aerospike",
-            test=_dummy_test,
-            total_calls=10_000,
-            congestion_threshold_ns=_THRESHOLD_NS,
-            pool_size=256,  # sized below the 8192 cap
-            achieved_qps=480,  # nearly met the 500 target -> just a touch undersized
-            peak_in_flight=256,  # but still saturated under load
-            lag_count=500,
-            worst_lag_ns=120_000_000,
-        )
+    runner._maybe_warn_congestion(
+        backend="aerospike",
+        test=_dummy_test,
+        total_calls=10_000,
+        congestion_threshold_ns=_THRESHOLD_NS,
+        pool_size=256,  # sized below the 8192 cap
+        achieved_qps=480,  # nearly met the 500 target -> just a touch undersized
+        peak_in_flight=256,  # but still saturated under load
+        lag_count=500,
+        worst_lag_ns=120_000_000,
+    )
 
-    messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
-    assert len(messages) == 1
-    message = messages[0]
+    message = capsys.readouterr().out
+    assert message.count("WARNING:") == 1
     assert "saturated below cap" in message
     assert "under-sized the pool" in message
     # The cap was never the limit, so the message must not mention the cap knob at all.
     assert "worker_thread_count" not in message
 
 
-def test_sized_pool_saturated_below_ceiling_with_low_throughput_blames_backend() -> None:
+def test_sized_pool_saturated_below_ceiling_with_low_throughput_blames_backend(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """The postgres_graph_cyclic signature: saturated below cap, throughput far below target.
 
     Every worker is busy yet only a fraction of the target qps lands, so per-call latency
@@ -508,48 +497,43 @@ def test_sized_pool_saturated_below_ceiling_with_low_throughput_blames_backend()
     """
     runner = _congestion_runner()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner._maybe_warn_congestion(
-            backend="postgres",
-            test=_dummy_test,
-            total_calls=10_000,
-            congestion_threshold_ns=_THRESHOLD_NS,
-            pool_size=722,  # sized below the 8192 cap
-            achieved_qps=32,  # ~6% of the 500 target despite a saturated pool
-            peak_in_flight=722,  # every worker busy the whole run
-            lag_count=9_000,
-            worst_lag_ns=273_523_000_000,
-        )
+    runner._maybe_warn_congestion(
+        backend="postgres",
+        test=_dummy_test,
+        total_calls=10_000,
+        congestion_threshold_ns=_THRESHOLD_NS,
+        pool_size=722,  # sized below the 8192 cap
+        achieved_qps=32,  # ~6% of the 500 target despite a saturated pool
+        peak_in_flight=722,  # every worker busy the whole run
+        lag_count=9_000,
+        worst_lag_ns=273_523_000_000,
+    )
 
-    messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
-    assert len(messages) == 1
-    message = messages[0]
+    message = capsys.readouterr().out
+    assert message.count("WARNING:") == 1
     assert "backend or DB connection pool" in message
     assert "latency grew under load" in message
     # The backend is the cause, so the message must not mention the worker cap knob.
     assert "worker_thread_count" not in message
 
 
-def test_no_lag_never_warns() -> None:
+def test_no_lag_never_warns(capsys: pytest.CaptureFixture[str]) -> None:
     """No dispatch lag at all means no warning, regardless of pool size."""
     runner = _congestion_runner()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runner._maybe_warn_congestion(
-            backend="aerospike",
-            test=_dummy_test,
-            total_calls=10_000,
-            congestion_threshold_ns=_THRESHOLD_NS,
-            pool_size=8192,
-            achieved_qps=500,
-            peak_in_flight=80,
-            lag_count=0,
-            worst_lag_ns=0,
-        )
+    runner._maybe_warn_congestion(
+        backend="aerospike",
+        test=_dummy_test,
+        total_calls=10_000,
+        congestion_threshold_ns=_THRESHOLD_NS,
+        pool_size=8192,
+        achieved_qps=500,
+        peak_in_flight=80,
+        lag_count=0,
+        worst_lag_ns=0,
+    )
 
-    assert [w for w in caught if "worker pool" in str(w.message)] == []
+    assert "WARNING:" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

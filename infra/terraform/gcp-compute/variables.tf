@@ -106,6 +106,17 @@ variable "postgres_topology" {
   }
 }
 
+variable "postgres_max_connections" {
+  description = "Postgres max_connections. Must exceed the benchmark worker pool size (worker_thread_count)."
+  type        = number
+  default     = 600
+
+  validation {
+    condition     = var.postgres_max_connections >= 100 && var.postgres_max_connections <= 10000
+    error_message = "postgres_max_connections must be between 100 and 10000."
+  }
+}
+
 variable "postgres_db_name" {
   description = "Benchmark database name."
   type        = string
