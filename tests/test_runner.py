@@ -97,15 +97,15 @@ class SlowWorkload(BaseBenchmarkWorkload):
 
 
 def _make_runner(workload: BaseBenchmarkWorkload) -> BenchmarkRunner:
-    # qps * runtime = 6 * 1 = 6 calls per enabled test, ~1s per test. calibrate=False keeps
-    # exact call-count assertions intact (the latency probe would otherwise run extra calls).
+    # qps * runtime = 6 * 1 = 6 timed calls per enabled test, ~1s per test. The mandatory
+    # warmup probe runs another min(64, 6) = 6 (unrecorded) calls first, so a counting
+    # workload sees 12 invocations but the histogram only records the 6 timed calls.
     return BenchmarkRunner(
         queries_per_second=6,
         scheduler_thread_count=2,
         worker_thread_count=4,
         runtime_per_function=1,
         workload=workload,
-        calibrate=False,
     )
 
 
@@ -149,8 +149,10 @@ def test_runner_runs_enabled_tests_at_configured_load() -> None:
 
     runner.run()
 
-    assert workload.aerospike_calls == 6
-    assert workload.redis_calls == 6
+    # 6 warmup-probe calls + 6 timed calls per enabled test; postgres is disabled so it is
+    # never probed or run.
+    assert workload.aerospike_calls == 12
+    assert workload.redis_calls == 12
     assert workload.postgres_calls == 0
 
 
@@ -177,7 +179,6 @@ def test_runner_invokes_lifecycle_hooks() -> None:
         worker_thread_count=1,
         runtime_per_function=1,
         workload=workload,
-        calibrate=False,
     )
 
     runner.run()
@@ -196,17 +197,17 @@ def test_runner_paces_calls_at_configured_qps() -> None:
         worker_thread_count=8,
         runtime_per_function=1,
         workload=workload,
-        calibrate=False,
     )
 
     start = time.perf_counter()
     runner.run()
     elapsed = time.perf_counter() - start
 
-    # 10 qps * 1s = 10 calls per enabled test; CountingWorkload has aerospike + redis,
-    # so total wall-clock is at least ~2s of paced work (with slack on both sides).
-    assert workload.aerospike_calls == 10
-    assert workload.redis_calls == 10
+    # 10 qps * 1s = 10 *timed* calls per enabled test (only these are recorded); the warmup
+    # probe runs 10 more unrecorded calls first. CountingWorkload has aerospike + redis, so
+    # the paced (timed) portion alone is at least ~2s of wall-clock.
+    assert runner.metrics["aerospike"]["aerospike_test_query"].count() == 10
+    assert runner.metrics["redis"]["redis_test_query"].count() == 10
     assert elapsed >= 1.8
 
 
@@ -223,7 +224,6 @@ def test_runner_counts_failures_and_excludes_them_from_histogram() -> None:
         worker_thread_count=2,
         runtime_per_function=1,
         workload=workload,
-        calibrate=False,
     )
 
     with warnings.catch_warnings():
@@ -231,8 +231,9 @@ def test_runner_counts_failures_and_excludes_them_from_histogram() -> None:
         runner.run()
 
     histogram = runner.metrics["aerospike"]["aerospike_test_flaky"]
-    # 3 of every 6 calls fail (calls 2, 4, 6). Successes go in the histogram, failures
-    # in the failure counter; counts should sum to the total scheduled calls.
+    # The warmup probe consumes 6 calls first (failures ignored, not recorded); the 6 timed
+    # calls then alternate, so 3 succeed (recorded) and 3 fail (counted). Probe failures never
+    # reach the failure counter.
     assert histogram.count() == 3
     assert runner.failures["aerospike"]["aerospike_test_flaky"] == 3
 
@@ -245,7 +246,6 @@ def test_runner_surfaces_first_failure_as_warning() -> None:
         worker_thread_count=2,
         runtime_per_function=1,
         workload=workload,
-        calibrate=False,
     )
 
     with warnings.catch_warnings(record=True) as caught:
@@ -284,7 +284,6 @@ def test_runner_does_not_crash_when_all_calls_fail() -> None:
         worker_thread_count=2,
         runtime_per_function=1,
         workload=AlwaysFailingWorkload(),
-        calibrate=False,
     )
 
     with warnings.catch_warnings():
@@ -301,16 +300,18 @@ def test_runner_does_not_crash_when_all_calls_fail() -> None:
 
 
 def test_runner_warns_when_worker_pool_is_undersized() -> None:
-    """A 1-worker pool faced with 20 qps of 300ms tests must report a *saturated* pool."""
+    """A 1-worker pool faced with 10 qps of 300ms tests must report a *saturated* pool.
+
+    worker_thread_count=1 caps the pool at one thread, so the warmup sizes (and pre-warms)
+    exactly one worker -- exercising the cap-saturation path.
+    """
     workload = SlowWorkload()
     runner = BenchmarkRunner(
-        queries_per_second=20,
+        queries_per_second=10,
         scheduler_thread_count=1,
         worker_thread_count=1,
         runtime_per_function=1,
         workload=workload,
-        # Fix the pool at the (deliberately tiny) cap so we exercise the cap-saturation path.
-        calibrate=False,
     )
 
     with warnings.catch_warnings(record=True) as caught:
@@ -369,7 +370,8 @@ def test_single_dispatch_lag_blip_does_not_warn() -> None:
             test=_dummy_test,
             total_calls=10_000,
             congestion_threshold_ns=_THRESHOLD_NS,
-            effective_workers=8192,
+            pool_size=8192,
+            achieved_qps=500,  # kept up fine
             peak_in_flight=80,  # nowhere near the pool size -> not starvation
             lag_count=1,  # a single blip -> below the sustained floor
             worst_lag_ns=50_500_000,
@@ -378,8 +380,8 @@ def test_single_dispatch_lag_blip_does_not_warn() -> None:
     assert [w for w in caught if "worker pool" in str(w.message)] == []
 
 
-def test_sustained_lag_without_saturation_warns_against_more_workers() -> None:
-    """Sustained lag with spare workers points at GC/jitter/backend, not worker_thread_count."""
+def test_throughput_shortfall_with_idle_pool_blames_downstream_not_workers() -> None:
+    """The cyclic signature: huge backlog while the pool sits idle -> downstream bottleneck."""
     runner = _congestion_runner()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -389,8 +391,37 @@ def test_sustained_lag_without_saturation_warns_against_more_workers() -> None:
             test=_dummy_test,
             total_calls=10_000,
             congestion_threshold_ns=_THRESHOLD_NS,
-            effective_workers=8192,
-            peak_in_flight=80,  # pre-warmed pool never saturated
+            pool_size=286,
+            achieved_qps=49,  # ~10% of the 500 target -> could not keep up
+            peak_in_flight=31,  # pool ~90% idle the whole time
+            lag_count=9_989,
+            worst_lag_ns=205_941_700_000,
+        )
+
+    messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
+    assert len(messages) == 1
+    message = messages[0]
+    assert "could not sustain" in message
+    assert "downstream" in message
+    assert "will not help" in message
+    # Must NOT misattribute to jitter as the old message did.
+    assert "scheduler jitter" not in message
+
+
+def test_transient_lag_when_throughput_is_met_points_at_jitter() -> None:
+    """Sustained lag but the run still kept up + pool idle -> genuine transient jitter."""
+    runner = _congestion_runner()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        runner._maybe_warn_congestion(
+            backend="aerospike",
+            test=_dummy_test,
+            total_calls=10_000,
+            congestion_threshold_ns=_THRESHOLD_NS,
+            pool_size=8192,
+            achieved_qps=495,  # met the 500 target
+            peak_in_flight=80,  # pool never saturated
             lag_count=200,  # 2% of calls -> sustained, above the 1% floor
             worst_lag_ns=80_000_000,
         )
@@ -400,10 +431,11 @@ def test_sustained_lag_without_saturation_warns_against_more_workers() -> None:
     message = messages[0]
     assert "not thread starvation" in message
     assert "will not help" in message
+    assert "jitter" in message
 
 
-def test_saturated_pool_at_cap_warns_to_increase_workers() -> None:
-    """When peak in-flight reaches the worker_thread_count cap, raising it is the right fix."""
+def test_saturated_pool_at_ceiling_warns_to_increase_workers() -> None:
+    """When peak in-flight reaches the pool ceiling, raising worker_thread_count is the fix."""
     runner = _congestion_runner()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -413,8 +445,9 @@ def test_saturated_pool_at_cap_warns_to_increase_workers() -> None:
             test=_dummy_test,
             total_calls=10_000,
             congestion_threshold_ns=_THRESHOLD_NS,
-            effective_workers=8192,  # sized up to the cap
-            peak_in_flight=8192,  # hit the cap -> genuine, cap-limited starvation
+            pool_size=8192,  # pool ceiling (e.g. calibrate=False uses worker_thread_count)
+            achieved_qps=300,  # fell behind because the pool was the limit
+            peak_in_flight=8192,  # hit the ceiling -> genuine client thread starvation
             lag_count=500,
             worst_lag_ns=120_000_000,
         )
@@ -425,8 +458,8 @@ def test_saturated_pool_at_cap_warns_to_increase_workers() -> None:
     assert "worker_thread_count" in messages[0]
 
 
-def test_auto_sized_pool_saturated_below_cap_warns_about_calibration() -> None:
-    """A right-sized pool that saturates below the cap means calibration under-estimated."""
+def test_sized_pool_saturated_below_ceiling_warns_about_calibration() -> None:
+    """A sized pool that saturates below the cap means the probe under-estimated latency."""
     runner = _congestion_runner()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -436,7 +469,8 @@ def test_auto_sized_pool_saturated_below_cap_warns_about_calibration() -> None:
             test=_dummy_test,
             total_calls=10_000,
             congestion_threshold_ns=_THRESHOLD_NS,
-            effective_workers=256,  # auto-sized, well below the 8192 cap
+            pool_size=256,  # sized below the 512 cap
+            achieved_qps=300,
             peak_in_flight=256,  # but still saturated under load
             lag_count=500,
             worst_lag_ns=120_000_000,
@@ -444,7 +478,7 @@ def test_auto_sized_pool_saturated_below_cap_warns_about_calibration() -> None:
 
     messages = [str(w.message) for w in caught if "worker pool" in str(w.message)]
     assert len(messages) == 1
-    assert "auto-sized" in messages[0]
+    assert "under-sized" in messages[0]
 
 
 def test_no_lag_never_warns() -> None:
@@ -458,7 +492,8 @@ def test_no_lag_never_warns() -> None:
             test=_dummy_test,
             total_calls=10_000,
             congestion_threshold_ns=_THRESHOLD_NS,
-            effective_workers=8192,
+            pool_size=8192,
+            achieved_qps=500,
             peak_in_flight=80,
             lag_count=0,
             worst_lag_ns=0,
@@ -501,7 +536,6 @@ def _calibrating_runner(
         worker_thread_count=worker_thread_count,
         runtime_per_function=1,
         workload=workload,
-        calibrate=True,
     )
 
 
@@ -513,48 +547,29 @@ def test_prewarm_pool_materializes_all_worker_threads() -> None:
         assert len(pool._threads) == 16
 
 
-def test_calibration_right_sizes_pool_far_below_a_huge_cap() -> None:
-    """A fast op against an 8192 cap should be right-sized down to a small pool."""
+def test_warmup_sizes_pool_far_below_a_huge_cap() -> None:
+    """A fast op against an 8192 cap should be sized down to a small pool by the warmup."""
     workload = FixedLatencyWorkload(sleep_s=0.02)
     runner = _calibrating_runner(workload, worker_thread_count=8192)
 
-    effective = runner._right_size_workers(
-        "aerospike", workload.aerospike_test_fixed, total_calls=64
-    )
+    pool_size = runner._size_worker_pool("aerospike", workload.aerospike_test_fixed, total_calls=64)
 
     # Little's Law (50 qps x ~20 ms x headroom) is tiny, so we land on the floor -- the
-    # point is that it's nowhere near the 8192 cap.
-    assert 32 <= effective <= 256
+    # point is that it's nowhere near the cap.
+    assert 32 <= pool_size <= 256
 
 
-def test_calibration_respects_the_configured_cap() -> None:
-    """Right-sizing never exceeds worker_thread_count, even for a slow, high-qps op."""
+def test_warmup_respects_the_configured_cap() -> None:
+    """Sizing never exceeds worker_thread_count, even for a slow, high-qps op."""
     workload = FixedLatencyWorkload(sleep_s=0.05)
     runner = _calibrating_runner(workload, worker_thread_count=4)
 
-    effective = runner._right_size_workers(
-        "aerospike", workload.aerospike_test_fixed, total_calls=16
-    )
+    pool_size = runner._size_worker_pool("aerospike", workload.aerospike_test_fixed, total_calls=16)
 
-    assert effective == 4
+    assert pool_size == 4
 
 
-def test_calibration_disabled_uses_configured_worker_count() -> None:
-    """With calibrate=False the pool is exactly the configured size (no probe)."""
-    workload = FixedLatencyWorkload(sleep_s=0.0)
-    runner = BenchmarkRunner(
-        queries_per_second=50,
-        scheduler_thread_count=2,
-        worker_thread_count=7,
-        runtime_per_function=1,
-        workload=workload,
-        calibrate=False,
-    )
-
-    assert runner._right_size_workers("aerospike", workload.aerospike_test_fixed, 64) == 7
-
-
-def test_calibration_falls_back_when_every_probe_call_fails() -> None:
+def test_warmup_falls_back_when_every_probe_call_fails() -> None:
     """If latency can't be estimated, fall back to a bounded count, not the raw cap."""
 
     def always_fails() -> None:
@@ -564,9 +579,34 @@ def test_calibration_falls_back_when_every_probe_call_fails() -> None:
     workload = FixedLatencyWorkload(sleep_s=0.0)
     runner = _calibrating_runner(workload, worker_thread_count=8192)
 
-    effective = runner._right_size_workers("aerospike", always_fails, total_calls=8)
+    pool_size = runner._size_worker_pool("aerospike", always_fails, total_calls=8)
 
-    assert effective == 256  # _CALIBRATION_FALLBACK_WORKERS, clamped to the cap
+    assert pool_size == 256  # _CALIBRATION_FALLBACK_WORKERS, clamped to the cap
+
+
+def test_pool_size_is_capped_at_worker_thread_count() -> None:
+    """The single knob bounds the (fully pre-warmed) pool, preventing the pre-warm OOM.
+
+    postgres_graph_cyclic's probe estimated ~3000 workers; pre-warming all of them tripped
+    a thread/mapping limit. Clamping the pool to worker_thread_count keeps pre-warm bounded.
+    """
+    workload = FixedLatencyWorkload(sleep_s=0.0)
+    runner = _calibrating_runner(workload, worker_thread_count=512)
+
+    assert runner._clamp_pool_size(3105) == 512
+    assert runner._clamp_pool_size(10_000) == 512
+    # Values between the floor and the cap pass through unchanged.
+    assert runner._clamp_pool_size(100) == 100
+
+
+def test_small_worker_thread_count_binds_the_pool_and_the_floor() -> None:
+    """A worker_thread_count below the min-threads floor still binds the pool to itself."""
+    workload = FixedLatencyWorkload(sleep_s=0.0)
+    runner = _calibrating_runner(workload, worker_thread_count=64)
+
+    assert runner._clamp_pool_size(10_000) == 64
+    # The floor is min(_MIN_WORKER_THREADS, cap) = min(32, 64) = 32.
+    assert runner._clamp_pool_size(10) == 32
 
 
 # ---------------------------------------------------------------------------
