@@ -1,17 +1,32 @@
 """Benchmark runner."""
 
+import csv
 import math
+import os
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-from threading import Barrier, BrokenBarrierError, Lock
+from threading import Barrier, BrokenBarrierError, Event, Lock, Thread
 
 from ai_ecosystem_benchmark._latency_histogram import LatencyHistogram
 from ai_ecosystem_benchmark.base_benchmark_workload import BaseBenchmarkWorkload, BenchmarkTest
 
 _BACKENDS = ("aerospike", "postgres", "redis")
 _NS_PER_SECOND = 1_000_000_000
+_DEFAULT_CSV_DIR = "benchmark_metrics_windows"
+_CSV_HEADER = [
+    "backend",
+    "test",
+    "window_start_sec",
+    "window_seconds",
+    "calls",
+    "failures",
+    "calls_per_sec",
+    "p50_ms",
+    "p90_ms",
+    "p99_ms",
+]
 # Sleep coarsely for most of the wait, then busy-wait the final slice for pacing precision.
 _COARSE_SLEEP_FLOOR_NS = 1_500_000  # 1.5 ms
 # Absolute floor for dispatch-lag warnings.
@@ -61,6 +76,8 @@ class BenchmarkRunner:
         worker_thread_count: int,
         runtime_per_function: int,
         workload: BaseBenchmarkWorkload,
+        metrics_window_seconds: int | None = None,
+        csv_output_path: str | None = None,
     ) -> None:
         if queries_per_second <= 0:
             raise ValueError("queries_per_second must be positive")
@@ -70,6 +87,8 @@ class BenchmarkRunner:
             raise ValueError("worker_thread_count must be positive")
         if runtime_per_function <= 0:
             raise ValueError("runtime_per_function must be positive")
+        if metrics_window_seconds is not None and metrics_window_seconds <= 0:
+            raise ValueError("metrics_window_seconds must be positive")
 
         self.queries_per_second = queries_per_second
         self.scheduler_thread_count = scheduler_thread_count
@@ -77,6 +96,12 @@ class BenchmarkRunner:
         self.worker_thread_count = worker_thread_count
         self.runtime_per_function = runtime_per_function
         self.workload = workload
+        self.metrics_window_seconds = metrics_window_seconds
+        if metrics_window_seconds is not None:
+            self.csv_output_path = csv_output_path or _DEFAULT_CSV_DIR
+            os.makedirs(self.csv_output_path, exist_ok=True)
+        else:
+            self.csv_output_path = None
         # Response latency, measured from a call's scheduled start; includes client queue wait.
         self.metrics: dict[str, dict[str, LatencyHistogram]] = defaultdict(
             lambda: defaultdict(LatencyHistogram)
@@ -86,6 +111,7 @@ class BenchmarkRunner:
             lambda: defaultdict(LatencyHistogram)
         )
         self.failures: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        self._csv_lock = Lock()
 
     def run(self) -> None:
         """Run all enabled benchmark tests against their backends."""
@@ -176,6 +202,67 @@ class BenchmarkRunner:
         lag_count = 0
         worst_lag_ns = 0
 
+        windowing_enabled = self.metrics_window_seconds is not None
+        window_seconds = self.metrics_window_seconds or 0
+        window_ns = window_seconds * _NS_PER_SECOND
+        num_windows = (
+            math.ceil(self.runtime_per_function / window_seconds) if windowing_enabled else 0
+        )
+        window_histograms: list[LatencyHistogram] = []
+        window_successes: list[int] = []
+        window_failures: list[int] = []
+        window_counters_lock = Lock()
+        sealed_windows: set[int] = set()
+        sealed_lock = Lock()
+        seal_done_event = Event()
+        seal_thread: Thread | None = None
+        origin_ns_ref: list[int] = [0]
+        origin_ns = 0
+
+        if windowing_enabled:
+            window_histograms = [LatencyHistogram() for _ in range(num_windows)]
+            window_successes = [0] * num_windows
+            window_failures = [0] * num_windows
+            seal_thread = Thread(
+                target=_window_seal_thread,
+                args=(
+                    self,
+                    backend,
+                    test.__name__,
+                    origin_ns_ref,
+                    window_seconds,
+                    window_ns,
+                    num_windows,
+                    window_histograms,
+                    window_successes,
+                    window_failures,
+                    window_counters_lock,
+                    sealed_windows,
+                    sealed_lock,
+                    seal_done_event,
+                ),
+                daemon=True,
+            )
+
+        def record_failure(end_ns: int) -> None:
+            if windowing_enabled:
+                window_idx = _window_index(end_ns - origin_ns, window_ns, num_windows)
+                with window_counters_lock:
+                    window_failures[window_idx] += 1
+
+        def record_success(
+            end_ns: int, scheduled_start_ns: int, dispatch_ns: int
+        ) -> None:
+            response_latency_ns = end_ns - scheduled_start_ns
+            service_latency_ns = end_ns - dispatch_ns
+            histogram.record(response_latency_ns)
+            service_histogram.record(service_latency_ns)
+            if windowing_enabled:
+                window_idx = _window_index(end_ns - origin_ns, window_ns, num_windows)
+                window_histograms[window_idx].record(response_latency_ns)
+                with window_counters_lock:
+                    window_successes[window_idx] += 1
+
         def execute(scheduled_start_ns: int) -> None:
             nonlocal failure_count, first_failure_warned
             nonlocal in_flight, peak_in_flight, lag_count, worst_lag_ns
@@ -192,20 +279,20 @@ class BenchmarkRunner:
             try:
                 test()
             except Exception as exc:
+                end_ns = time.perf_counter_ns()
                 with failure_lock:
                     failure_count += 1
                     should_warn = not first_failure_warned
                     if should_warn:
                         first_failure_warned = True
+                record_failure(end_ns)
                 if should_warn:
                     _emit_warning(
                         f"{backend}.{test.__name__}: first failure: {type(exc).__name__}: {exc}"
                     )
             else:
                 end_ns = time.perf_counter_ns()
-                # Response latency includes queue wait; service latency is execution only.
-                histogram.record(end_ns - scheduled_start_ns)
-                service_histogram.record(end_ns - dispatch_ns)
+                record_success(end_ns, scheduled_start_ns, dispatch_ns)
             finally:
                 with stats_lock:
                     in_flight -= 1
@@ -233,6 +320,9 @@ class BenchmarkRunner:
 
             # Put initial deadlines slightly in the future after thread startup.
             origin_ns = time.perf_counter_ns() + 10_000_000  # 10 ms
+            origin_ns_ref[0] = origin_ns
+            if seal_thread is not None:
+                seal_thread.start()
 
             def schedule_thread_load(thread_index: int) -> None:
                 # Stagger scheduler threads by one global slot.
@@ -251,6 +341,11 @@ class BenchmarkRunner:
             ]
             for future in scheduler_futures:
                 future.result()
+
+        if seal_thread is not None:
+            seal_done_event.set()
+            seal_thread.join()
+
         # Includes drain time after scheduling, so backlog reduces achieved qps.
         drain_complete_ns = time.perf_counter_ns()
         elapsed_s = (drain_complete_ns - origin_ns) / _NS_PER_SECOND
@@ -268,6 +363,55 @@ class BenchmarkRunner:
             worst_lag_ns=worst_lag_ns,
         )
         return failure_count
+
+    def _method_csv_path(self, backend: str, test_name: str) -> str:
+        return os.path.join(self.csv_output_path, f"{backend}_{test_name}.csv")
+
+    def _append_csv_row(
+        self,
+        backend: str,
+        test_name: str,
+        window_idx: int,
+        window_seconds: int,
+        calls: int,
+        failures: int,
+        histogram: LatencyHistogram,
+    ) -> None:
+        if self.csv_output_path is None:
+            return
+        csv_file_path = self._method_csv_path(backend, test_name)
+        window_start_sec = window_idx * window_seconds
+        total_calls = calls + failures
+        calls_per_sec = round(total_calls / window_seconds)
+        if calls > 0:
+            p50_ms = _ns_to_ms(histogram.percentile_ns(50))
+            p90_ms = _ns_to_ms(histogram.percentile_ns(90))
+            p99_ms = _ns_to_ms(histogram.percentile_ns(99))
+        else:
+            p50_ms = 0
+            p90_ms = 0
+            p99_ms = 0
+        row = [
+            backend,
+            test_name,
+            window_start_sec,
+            window_seconds,
+            calls,
+            failures,
+            calls_per_sec,
+            p50_ms,
+            p90_ms,
+            p99_ms,
+        ]
+        with self._csv_lock:
+            write_header = (
+                not os.path.exists(csv_file_path) or os.path.getsize(csv_file_path) == 0
+            )
+            with open(csv_file_path, "a", newline="") as csv_file:
+                writer = csv.writer(csv_file)
+                if write_header:
+                    writer.writerow(_CSV_HEADER)
+                writer.writerow(row)
 
     def _size_worker_pool(self, backend: str, test: BenchmarkTest, total_calls: int) -> int:
         """Choose the total worker count to pre-warm for ``test``."""
@@ -404,6 +548,56 @@ class BenchmarkRunner:
             f"(worst {worst_lag_ms:.1f} ms > {threshold_ms:.1f} ms). Likely host scheduler "
             f"jitter or GC pauses."
         )
+
+
+def _window_index(elapsed_ns: int, window_ns: int, num_windows: int) -> int:
+    idx = elapsed_ns // window_ns
+    return max(0, min(idx, num_windows - 1))
+
+
+def _window_seal_thread(
+    runner: BenchmarkRunner,
+    backend: str,
+    test_name: str,
+    origin_ns_ref: list[int],
+    window_seconds: int,
+    window_ns: int,
+    num_windows: int,
+    window_histograms: list[LatencyHistogram],
+    window_successes: list[int],
+    window_failures: list[int],
+    counters_lock: Lock,
+    sealed_windows: set[int],
+    sealed_lock: Lock,
+    done_event: Event,
+) -> None:
+    def seal_one(window_idx: int) -> None:
+        with sealed_lock:
+            if window_idx in sealed_windows:
+                return
+            sealed_windows.add(window_idx)
+        with counters_lock:
+            calls = window_successes[window_idx]
+            failures = window_failures[window_idx]
+        runner._append_csv_row(
+            backend,
+            test_name,
+            window_idx,
+            window_seconds,
+            calls,
+            failures,
+            window_histograms[window_idx],
+        )
+
+    origin_ns = origin_ns_ref[0]
+    for window_idx in range(num_windows - 1):
+        _sleep_until_ns(origin_ns + (window_idx + 1) * window_ns)
+        seal_one(window_idx)
+
+    done_event.wait()
+
+    for window_idx in range(num_windows):
+        seal_one(window_idx)
 
 
 def _prewarm_pool(pool: ThreadPoolExecutor, count: int) -> None:
